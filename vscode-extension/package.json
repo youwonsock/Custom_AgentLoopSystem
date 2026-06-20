@@ -1,0 +1,172 @@
+{
+  "name": "agent-loop-vscode",
+  "displayName": "Agent Loop Orchestrator",
+  "description": "VS Code extension that controls the Custom Agent Loop System CLI to autonomously achieve coding goals via a multi-model multi-session orchestrator.",
+  "version": "1.0.6",
+  "publisher": "custom-agent-loop",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/custom-agent-loop/agent-loop-vscode"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning",
+    "Snippets"
+  ],
+  "activationEvents": [
+    "onCommand:agentLoop.showPanel",
+    "onCommand:agentLoop.newSession",
+    "onCommand:agentLoop.resumeSession",
+    "onCommand:agentLoop.discoverModels",
+    "onCommand:agentLoop.stopSession",
+    "onView:agentLoopExplorer"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "agentLoop.showPanel",
+        "title": "Agent Loop: Show Panel",
+        "category": "Agent Loop",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "agentLoop.newSession",
+        "title": "Agent Loop: New Session",
+        "category": "Agent Loop",
+        "icon": "$(add)"
+      },
+      {
+        "command": "agentLoop.resumeSession",
+        "title": "Agent Loop: Resume Session",
+        "category": "Agent Loop"
+      },
+      {
+        "command": "agentLoop.discoverModels",
+        "title": "Agent Loop: Discover Models",
+        "category": "Agent Loop",
+        "icon": "$(server)"
+      },
+      {
+        "command": "agentLoop.stopSession",
+        "title": "Agent Loop: Stop Session",
+        "category": "Agent Loop"
+      },
+      {
+        "command": "agentLoop.refresh",
+        "title": "Agent Loop: Refresh",
+        "category": "Agent Loop",
+        "icon": "$(refresh)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agentLoopViewContainer",
+          "title": "Agent Loop",
+          "icon": "$(symbol-enum)"
+        }
+      ]
+    },
+    "views": {
+      "agentLoopViewContainer": [
+        {
+          "id": "agentLoopExplorer",
+          "name": "Sessions"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "agentLoop.newSession",
+          "when": "view == agentLoopExplorer",
+          "group": "navigation@1"
+        },
+        {
+          "command": "agentLoop.showPanel",
+          "when": "view == agentLoopExplorer",
+          "group": "navigation@2"
+        },
+        {
+          "command": "agentLoop.discoverModels",
+          "when": "view == agentLoopExplorer",
+          "group": "navigation@3"
+        },
+        {
+          "command": "agentLoop.refresh",
+          "when": "view == agentLoopExplorer",
+          "group": "navigation@4"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "agentLoopExplorer",
+        "contents": "No agent loop sessions yet.\nStart by creating one:\n[New Session](command:agentLoop.newSession)\nOr open the control panel:\n[Show Panel](command:agentLoop.showPanel)\nNeed model options?\n[Discover Models](command:agentLoop.discoverModels)",
+        "when": "agentLoop.noSessions"
+      }
+    ],
+    "configuration": {
+      "title": "Agent Loop",
+      "properties": {
+        "agentLoop.cliBinary": {
+          "type": "string",
+          "default": "opencode",
+          "description": "Name or path of the coding CLI binary to control."
+        },
+        "agentLoop.rootDir": {
+          "type": "string",
+          "default": "",
+          "description": "Orchestrator root directory (where sessions_registry.json lives). Empty = extension storage path."
+        },
+        "agentLoop.nodeBinary": {
+          "type": "string",
+          "default": "node",
+          "description": "Path to the Node.js binary used to run the orchestrator CLI."
+        },
+        "agentLoop.orchestratorScript": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the compiled loop_orchestrator.js. Empty = auto-detect relative to rootDir."
+        },
+        "agentLoop.maxIterations": {
+          "type": "number",
+          "default": 20,
+          "description": "Maximum loop iterations before the session is marked FAILED."
+        },
+        "agentLoop.phaseTimeoutMs": {
+          "type": "number",
+          "default": 600000,
+          "description": "Phase timeout in milliseconds."
+        },
+        "agentLoop.idleTimeoutMs": {
+          "type": "number",
+          "default": 90000,
+          "description": "Idle timeout in milliseconds."
+        },
+        "agentLoop.pollIntervalMs": {
+          "type": "number",
+          "default": 1000,
+          "description": "Interval in milliseconds for polling session state files."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "typecheck": "tsc -p ./ --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^5.4.0"
+  }
+}

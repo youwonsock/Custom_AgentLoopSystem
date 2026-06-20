@@ -1,0 +1,28 @@
+{
+  "name": "custom-agent-loop-system",
+  "version": "1.0.0",
+  "description": "Dynamic multi-model multi-session orchestrator that controls an interactive coding CLI (opencode) as child processes to autonomously achieve goals.",
+  "type": "commonjs",
+  "main": "dist/loop_orchestrator.js",
+  "bin": {
+    "agent-loop": "dist/loop_orchestrator.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/loop_orchestrator.js",
+    "init": "node dist/loop_orchestrator.js init"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "fs-extra": "^11.2.0",
+    "node-pty": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.0"
+  }
+}
