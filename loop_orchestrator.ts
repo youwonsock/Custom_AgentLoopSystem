@@ -105,6 +105,7 @@ interface SessionRegistry {
   activeSessionIds: string[];
   availableModels: string[];
   modelsDiscoveredAt: string | null;
+  modelsDiscoveredCli: string | null;
   sessionMetas: SessionMeta[];
   manualModelsOverride: string[] | null;
 }
@@ -239,10 +240,11 @@ const OPENCODE_PROFILE: CliProfile = {
 const KILO_PROFILE: CliProfile = {
   name: "kilo",
   defaultBinary: "kilo",
-  modelsArgs: ["models"],
+  modelsArgs: ["models", "--pure"],
   buildRunArgs: (opts) => [
     "run",
     "--auto",
+    "--pure",
     "--format", "json",
     "--model", opts.model,
     "--dir", opts.targetProjectPath,
@@ -262,14 +264,18 @@ const CLI_PROFILES: Record<string, CliProfile> = {
 };
 
 function resolveCliProfile(profileName: string | null, binaryName: string): CliProfile {
+  const lower = binaryName.toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, "");
   if (profileName && CLI_PROFILES[profileName]) {
-    return CLI_PROFILES[profileName];
-  }
-  const lower = binaryName.toLowerCase();
-  for (const profile of Object.values(CLI_PROFILES)) {
-    if (lower === profile.defaultBinary || lower === profile.name) {
-      return profile;
+    const profile = CLI_PROFILES[profileName];
+    // If the binary is one of the known default names and doesn't match the requested
+    // profile's default binary, prefer the profile that matches the actual binary.
+    if (lower !== profile.defaultBinary && lower !== profile.name && CLI_PROFILES[lower]) {
+      return CLI_PROFILES[lower];
     }
+    return profile;
+  }
+  if (CLI_PROFILES[lower]) {
+    return CLI_PROFILES[lower];
   }
   return OPENCODE_PROFILE;
 }
@@ -485,13 +491,20 @@ function spawnCliPty(opts: SpawnCliOptions): SpawnHandle {
 
   const resolvedBinary = resolveBinaryOnWindows(opts.cliBinary);
 
+  const hasTty = !!(process.stdin && (process.stdin as { isTTY?: boolean }).isTTY);
+  const useConpty = process.platform === "win32" && hasTty;
+
+  if (process.platform === "win32" && !hasTty) {
+    console.warn(`[spawnCliPty] No TTY detected; disabling ConPTY to avoid AttachConsole failures.`);
+  }
+
   const ptyProc = pty.spawn(resolvedBinary, args, {
     name: "xterm-256color",
     cols: 200,
     rows: 50,
     cwd: opts.targetProjectPath,
     env,
-    useConpty: process.platform === "win32",
+    useConpty,
   });
 
   const pid = ptyProc.pid;
@@ -593,12 +606,49 @@ function discoverCliModels(cliBinary: string, override: string[] | null, profile
       }
       const text = `${stdout}\n${stderr}`;
       const models: string[] = [];
-      const regex = /([a-zA-Z0-9_-]+)\/([a-zA-Z0-9_.-]+)/g;
-      let match: RegExpExecArray | null;
-      while ((match = regex.exec(text)) !== null) {
-        const model = `${match[1]}/${match[2]}`;
-        if (!models.includes(model)) {
+      // Match lines that look like "provider/model" or "kilo/provider/model" (kilo nested format).
+      // We prefer the longest match per line to capture nested identifiers like kilo/ai21/jamba-large-1.7.
+      const lineRegex = /^([a-zA-Z0-9_~.-]+)\/([a-zA-Z0-9_~.-]+)(?:\/([a-zA-Z0-9_~.-]+))?/gm;
+      let lineMatch: RegExpExecArray | null;
+      while ((lineMatch = lineRegex.exec(text)) !== null) {
+        let model: string;
+        if (lineMatch[3]) {
+          // 3-part: kilo/provider/model
+          model = `${lineMatch[1]}/${lineMatch[2]}/${lineMatch[3]}`;
+        } else {
+          // 2-part: provider/model
+          model = `${lineMatch[1]}/${lineMatch[2]}`;
+        }
+        if (!model.startsWith(".") && !model.startsWith("/") && !models.includes(model)) {
           models.push(model);
+        }
+      }
+      if (models.length === 0) {
+        const tuiErrorPatterns = [
+          "registered data providers",
+          "no registered",
+          "tui",
+          "auth",
+          "connect",
+        ];
+        const lowerText = text.toLowerCase();
+        const matched = tuiErrorPatterns.find((p) => lowerText.includes(p));
+        if (matched) {
+          console.warn(
+            `[discoverCliModels] '${cliBinary} ${profile.modelsArgs.join(" ")}' returned a TUI/auth error instead of models. ` +
+            `Output: ${text.slice(0, 400)}\n` +
+            `If using kilo: run 'kilo auth' or set KILOCODE_API_KEY environment variable, then retry.`
+          );
+        } else if (text.trim().length > 0) {
+          console.warn(
+            `[discoverCliModels] '${cliBinary} ${profile.modelsArgs.join(" ")}' returned no parseable models. ` +
+            `Output: ${text.slice(0, 400)}`
+          );
+        } else {
+          console.warn(
+            `[discoverCliModels] '${cliBinary} ${profile.modelsArgs.join(" ")}' produced no output. ` +
+            `Verify the CLI is installed and authenticated.`
+          );
         }
       }
       resolve(models);
@@ -1464,6 +1514,7 @@ async function cmdInit(rootDir: string): Promise<void> {
     activeSessionIds: [],
     availableModels: [],
     modelsDiscoveredAt: null,
+    modelsDiscoveredCli: null,
     sessionMetas: [],
     manualModelsOverride: null,
   };
@@ -1484,6 +1535,7 @@ async function cmdModels(parsed: Record<string, string>, rootDir: string): Promi
   if (registry) {
     registry.availableModels = models;
     registry.modelsDiscoveredAt = new Date().toISOString();
+    registry.modelsDiscoveredCli = `${cliBinary} (${profile.name})`;
     await atomicWriteJson(registryPath, registry);
   }
 
@@ -1526,10 +1578,20 @@ async function cmdRun(parsed: Record<string, string>, rootDir: string): Promise<
   const reg: SessionRegistry = registry;
 
   console.log(`[orchestrator] CLI profile: ${profile.name} | binary: ${cliBinary}`);
+  if (profile.defaultBinary !== cliBinary) {
+    const baseName = cliBinary.toLowerCase().replace(/\.(exe|cmd|bat)$/, "");
+    if (baseName !== profile.name) {
+      console.warn(
+        `[orchestrator] WARNING: CLI profile '${profile.name}' expects binary '${profile.defaultBinary}' but got '${cliBinary}'. ` +
+        `Arguments may not be compatible. Use --profile matching your binary, or use --binary ${profile.defaultBinary}.`
+      );
+    }
+  }
   console.log(`[orchestrator] Discovering available models from '${cliBinary}'...`);
   const models = await discoverCliModels(cliBinary, reg.manualModelsOverride, profile);
   reg.availableModels = models;
   reg.modelsDiscoveredAt = new Date().toISOString();
+  reg.modelsDiscoveredCli = `${cliBinary} (${profile.name})`;
   await atomicWriteJson(registryPath, reg);
 
   if (models.length === 0) {
@@ -1538,7 +1600,12 @@ async function cmdRun(parsed: Record<string, string>, rootDir: string): Promise<
     console.log(`[orchestrator] Discovered ${models.length} models.`);
   }
 
-  const fallbackModel = models.length > 0 ? models[0] : "anthropic/claude-sonnet-4-5";
+  const PROFILE_FALLBACKS: Record<string, string> = {
+    opencode: "opencode/big-pickle",
+    kilo: "anthropic/claude-sonnet-4-5",
+  };
+  const profileFallback = PROFILE_FALLBACKS[profile.name] ?? "anthropic/claude-sonnet-4-5";
+  const fallbackModel = models.length > 0 ? models[0] : profileFallback;
   const modelMapping = resolveModelMapping(parsed, models, fallbackModel);
 
   console.log(`[orchestrator] Model mapping:`);

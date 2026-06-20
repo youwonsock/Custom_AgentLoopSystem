@@ -77,7 +77,7 @@ export class LoopClient {
     return readExtensionConfig();
   }
 
-  async discoverModels(): Promise<string[]> {
+  async discoverModels(): Promise<{ models: string[]; exitCode: number | null; stderr: string; command: string }> {
     const root = await this.store.getRootDir();
     let script: string;
     try {
@@ -85,48 +85,30 @@ export class LoopClient {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       vscode.window.showErrorMessage(msg);
-      return [];
+      return { models: [], exitCode: -1, stderr: msg, command: "" };
     }
     const cfg = this.liveConfig();
     const args = ["models", "--binary", cfg.cliBinary, "--profile", cfg.cliProfile, "--root", root];
-    return new Promise<string[]>((resolve) => {
+    const cmdStr = `${this.config.nodeBinary} ${script} ${args.join(" ")}`;
+    return new Promise<{ models: string[]; exitCode: number | null; stderr: string; command: string }>((resolve) => {
       const child = spawn(this.config.nodeBinary, [script, ...args], {
         cwd: root,
         env: process.env,
       });
-      let stdout = "";
       let stderr = "";
-      child.stdout.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString();
+      child.stdout.on("data", (_chunk: Buffer) => {
+        // Intentionally not parsing stdout here. The orchestrator writes discovered models
+        // to sessions_registry.json. The caller should re-read the registry after this resolves.
       });
       child.stderr.on("data", (chunk: Buffer) => {
         stderr += chunk.toString();
       });
       child.on("error", (err) => {
         vscode.window.showErrorMessage(`Failed to run model discovery: ${err.message}`);
-        resolve([]);
+        resolve({ models: [], exitCode: -1, stderr: err.message, command: cmdStr });
       });
       child.on("exit", (code) => {
-        const models: string[] = [];
-        const lines = stdout.split("\n");
-        for (const line of lines) {
-          const trimmed = line.trim();
-          const match = trimmed.match(/^([a-zA-Z0-9_-]+)\/([a-zA-Z0-9_.-]+)$/);
-          if (match) {
-            const model = `${match[1]}/${match[2]}`;
-            if (!models.includes(model)) {
-              models.push(model);
-            }
-          }
-        }
-        if (models.length === 0) {
-          const hint =
-            code !== 0
-              ? `Orchestrator exited with code ${code}. Stderr: ${stderr.slice(0, 300)}`
-              : `No models parsed. Verify '${this.config.cliBinary} models' works in a terminal. Script: ${script}`;
-          vscode.window.showWarningMessage(`Agent Loop: Discovered 0 models. ${hint}`);
-        }
-        resolve(models);
+        resolve({ models: [], exitCode: code, stderr: stderr.slice(0, 2000), command: cmdStr });
       });
     });
   }

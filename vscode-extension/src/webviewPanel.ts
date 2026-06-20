@@ -127,6 +127,9 @@ export class LoopWebviewPanel {
       case "openFinalSummary":
         await this.openFinalSummary(msg.sessionId);
         break;
+      case "deleteSession":
+        await this.handleDeleteSession(msg.sessionId);
+        break;
     }
   }
 
@@ -147,17 +150,31 @@ export class LoopWebviewPanel {
     if (msg.cliProfile) {
       const cfg = vscode.workspace.getConfiguration("agentLoop");
       await cfg.update("cliProfile", msg.cliProfile, vscode.ConfigurationTarget.Global);
+      const profileDefaults: Record<string, string> = {
+        opencode: "opencode",
+        kilo: "kilo",
+      };
+      const expectedBinary = profileDefaults[msg.cliProfile];
+      if (expectedBinary) {
+        const currentBinary = cfg.get<string>("cliBinary", "opencode");
+        if (currentBinary !== expectedBinary && (currentBinary === "opencode" || currentBinary === "kilo")) {
+          await cfg.update("cliBinary", expectedBinary, vscode.ConfigurationTarget.Global);
+        }
+      }
     }
 
     try {
-      const sessionId = await this.client.startNewSession({
+      const procId = await this.client.startNewSession({
         goal: msg.goal,
         targetProjectPath: target,
         modelMapping: msg.modelMapping,
       });
-      this.selectedSessionId = sessionId;
-      this.attachLogListener(sessionId);
-      vscode.window.showInformationMessage(`Agent Loop: Started session ${sessionId}`);
+      this.attachLogListener(procId);
+      // Don't set selectedSessionId here — let doRefresh() auto-select the newly created
+      // session (matched by status=RUNNING) so the UI shows the real session ID from
+      // sessions_registry.json rather than the process PID.
+      this.selectedSessionId = null;
+      vscode.window.showInformationMessage(`Agent Loop: Started session (pid ${procId})`);
       await this.refresh();
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -180,17 +197,66 @@ export class LoopWebviewPanel {
 
   private async handleDiscoverModels(): Promise<void> {
     try {
-      const models = await this.client.discoverModels();
+      const result = await this.client.discoverModels();
       const registry = await this.store.readRegistry();
-      registry.availableModels = models;
-      registry.modelsDiscoveredAt = new Date().toISOString();
-      await this.store.writeRegistry(registry);
-      vscode.window.showInformationMessage(`Agent Loop: Discovered ${models.length} models.`);
+      const discoveredCount = (registry.availableModels || []).length;
+      if (result.exitCode !== 0) {
+        const stderrHint = result.stderr ? ` Stderr: ${result.stderr.slice(0, 400)}` : "";
+        vscode.window.showWarningMessage(
+          `Agent Loop: Model discovery failed (exit ${result.exitCode}).${stderrHint}\nCommand: ${result.command}`
+        );
+      } else if (discoveredCount === 0) {
+        vscode.window.showWarningMessage(
+          `Agent Loop: Discovered 0 models. The orchestrator ran successfully but found no models.\n` +
+          `Verify '${this.config.cliBinary} models' works in a terminal.\n` +
+          `Command: ${result.command}` +
+          (result.stderr ? `\nStderr: ${result.stderr.slice(0, 300)}` : "")
+        );
+      } else {
+        vscode.window.showInformationMessage(`Agent Loop: Discovered ${discoveredCount} models.`);
+      }
       await this.refresh();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       vscode.window.showErrorMessage(`Model discovery failed: ${msg}`);
     }
+  }
+
+  private async handleDeleteSession(sessionId: string): Promise<void> {
+    if (!sessionId || sessionId.length === 0) return;
+    const confirm = await vscode.window.showWarningMessage(
+      `Delete session "${sessionId}"? This removes all loop state, history, and progress notes for this session. This cannot be undone.`,
+      { modal: true },
+      "Delete"
+    );
+    if (confirm !== "Delete") return;
+
+    if (this.client.isRunning(sessionId)) {
+      try {
+        this.client.stopSession(sessionId);
+      } catch {
+        // best effort
+      }
+    }
+
+    const result = await this.store.deleteSession(sessionId);
+    if (this.selectedSessionId === sessionId) {
+      this.selectedSessionId = null;
+    }
+    this.logBuffers.delete(sessionId);
+    this.client.removeLogListener(sessionId);
+    this.client.removeExitListener(sessionId);
+
+    if (result.error) {
+      vscode.window.showWarningMessage(`Agent Loop: Partial delete — ${result.error}`);
+    } else if (result.removedFromRegistry && result.dirRemoved) {
+      vscode.window.showInformationMessage(`Agent Loop: Session "${sessionId}" deleted.`);
+    } else if (result.removedFromRegistry) {
+      vscode.window.showInformationMessage(`Agent Loop: Session "${sessionId}" removed from registry.`);
+    } else {
+      vscode.window.showInformationMessage(`Agent Loop: Session "${sessionId}" was not found.`);
+    }
+    await this.refresh();
   }
 
   private attachLogListener(sessionId: string): void {
@@ -263,6 +329,7 @@ export class LoopWebviewPanel {
       isRunning,
       defaultTargetPath,
       cliProfile: liveCfg.cliProfile,
+      modelsDiscoveredCli: registry.modelsDiscoveredCli ?? null,
     };
 
     this.postMessage({ command: "stateUpdate", payload });

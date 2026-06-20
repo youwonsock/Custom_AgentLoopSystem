@@ -98,42 +98,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       panel.postDiscoverModels();
     }),
 
-    vscode.commands.registerCommand("agentLoop.newSession", async () => {
-      await store!.ensureInitialized();
-      const panel = LoopWebviewPanel.getInstance(context, store!, client!, config);
-      panel.postFocusComposer();
-    }),
-
-    vscode.commands.registerCommand("agentLoop.resumeSession", async () => {
-      await store!.ensureInitialized();
-      const registry = await store!.readRegistry();
-      if (registry.sessionMetas.length === 0) {
-        vscode.window.showInformationMessage("Agent Loop: No sessions found to resume.");
-        return;
-      }
-      const items = registry.sessionMetas.map((m: SessionMeta) => ({
-        label: m.sessionId,
-        description: m.status,
-        detail: m.goal,
-        sessionId: m.sessionId,
-      }));
-      const picked = await vscode.window.showQuickPick(items, {
-        placeHolder: "Select a session to resume",
-        ignoreFocusOut: true,
-      });
-      if (!picked) return;
-      const panel = LoopWebviewPanel.getInstance(context, store!, client!, config);
-      panel.show();
-      panel.postResumeSession(picked.sessionId);
-    }),
-
-    vscode.commands.registerCommand("agentLoop.discoverModels", async () => {
-      await store!.ensureInitialized();
-      const panel = LoopWebviewPanel.getInstance(context, store!, client!, config);
-      panel.show();
-      panel.postDiscoverModels();
-    }),
-
     vscode.commands.registerCommand("agentLoop.stopSession", async () => {
       const active = client!.getActiveSessionIds();
       if (active.length === 0) {
@@ -142,11 +106,56 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       const picked = await vscode.window.showQuickPick(
         active.map((sid) => ({ label: sid, sessionId: sid })),
-        { placeHolder: "Select a session to stop", ignoreFocusOut: true }
+        { placeHolder: "Select an active session to stop", ignoreFocusOut: true }
       );
       if (!picked) return;
       client!.stopSession(picked.sessionId);
       vscode.window.showInformationMessage(`Agent Loop: Stopped session ${picked.sessionId}`);
+    }),
+
+    vscode.commands.registerCommand("agentLoop.deleteSession", async (arg?: { sessionId?: string }) => {
+      await store!.ensureInitialized();
+      const targetId = arg?.sessionId;
+      const registry = await store!.readRegistry();
+      let sessionId: string | undefined = targetId;
+      if (!sessionId) {
+        if (registry.sessionMetas.length === 0) {
+          vscode.window.showInformationMessage("Agent Loop: No sessions to delete.");
+          return;
+        }
+        const items = registry.sessionMetas.map((m: SessionMeta) => ({
+          label: m.sessionId,
+          description: m.status,
+          detail: m.goal,
+          sessionId: m.sessionId,
+        }));
+        const picked = await vscode.window.showQuickPick(items, {
+          placeHolder: "Select a session to delete",
+          ignoreFocusOut: true,
+        });
+        if (!picked) return;
+        sessionId = picked.sessionId;
+      }
+      const confirm = await vscode.window.showWarningMessage(
+        `Delete session "${sessionId}"? This removes all loop state, history, and progress notes. This cannot be undone.`,
+        { modal: true },
+        "Delete"
+      );
+      if (confirm !== "Delete") return;
+      if (client!.isRunning(sessionId)) {
+        try { client!.stopSession(sessionId); } catch { /* best effort */ }
+      }
+      const result = await store!.deleteSession(sessionId);
+      if (result.error) {
+        vscode.window.showWarningMessage(`Agent Loop: Partial delete — ${result.error}`);
+      } else if (result.removedFromRegistry && result.dirRemoved) {
+        vscode.window.showInformationMessage(`Agent Loop: Session "${sessionId}" deleted.`);
+      } else if (result.removedFromRegistry) {
+        vscode.window.showInformationMessage(`Agent Loop: Session "${sessionId}" removed from registry.`);
+      } else {
+        vscode.window.showInformationMessage(`Agent Loop: Session "${sessionId}" was not found.`);
+      }
+      sessionExplorerProvider.refresh();
     }),
 
     vscode.commands.registerCommand("agentLoop.refresh", async () => {
@@ -167,7 +176,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // ignore
         }
         sessionExplorerProvider.refresh();
-        vscode.window.showInformationMessage("Agent Loop: Configuration updated. Re-discover models if needed.");
+        const panel = LoopWebviewPanel.getInstance(context, store!, client!, config);
+        panel.show();
+        panel.postDiscoverModels();
+        vscode.window.showInformationMessage(
+          `Agent Loop: Configuration updated (cliProfile=${freshConfig.cliProfile}, cliBinary=${freshConfig.cliBinary}).`
+        );
       }
     })
   );

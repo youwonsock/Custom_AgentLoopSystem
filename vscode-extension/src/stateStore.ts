@@ -112,6 +112,7 @@ export class StateStore {
         activeSessionIds: [],
         availableModels: [],
         modelsDiscoveredAt: null,
+        modelsDiscoveredCli: null,
         sessionMetas: [],
         manualModelsOverride: null,
       };
@@ -154,6 +155,7 @@ export class StateStore {
       activeSessionIds: [],
       availableModels: [],
       modelsDiscoveredAt: null,
+      modelsDiscoveredCli: null,
       sessionMetas: [],
       manualModelsOverride: null,
     };
@@ -166,6 +168,40 @@ export class StateStore {
     await this.writeJsonAtomic(registryPath, registry);
     this.registryCache = registry;
     this.notifyListeners();
+  }
+
+  async deleteSession(sessionId: string): Promise<{ removedFromRegistry: boolean; dirRemoved: boolean; error?: string }> {
+    let removedFromRegistry = false;
+    let dirRemoved = false;
+    try {
+      const registry = await this.readRegistry();
+      const before = registry.sessionMetas.length;
+      registry.sessionMetas = registry.sessionMetas.filter((m) => m.sessionId !== sessionId);
+      registry.activeSessionIds = (registry.activeSessionIds || []).filter((id) => id !== sessionId);
+      if (registry.sessionMetas.length < before) {
+        await this.writeRegistry(registry);
+        removedFromRegistry = true;
+      }
+      this.stateCache.delete(sessionId);
+      const sessionDir = await this.getSessionDir(sessionId);
+      try {
+        await fs.rm(sessionDir, { recursive: true, force: true });
+        dirRemoved = true;
+      } catch (err) {
+        return {
+          removedFromRegistry,
+          dirRemoved: false,
+          error: `Registry updated but failed to remove session directory: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    } catch (err) {
+      return {
+        removedFromRegistry,
+        dirRemoved,
+        error: `Failed to delete session: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    return { removedFromRegistry, dirRemoved };
   }
 
   async readState(sessionId: string): Promise<LoopState | null> {

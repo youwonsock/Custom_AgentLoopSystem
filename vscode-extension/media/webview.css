@@ -252,6 +252,17 @@ html, body {
   outline: 1px solid var(--accent);
 }
 
+.model-source {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 12px;
+  background: var(--input-bg);
+  padding: 1px 6px;
+  border-radius: 2px;
+  border: 1px solid var(--accent);
+  margin-left: 4px;
+}
+
 
 .notes-content {
   flex: 1;

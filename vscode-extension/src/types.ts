@@ -61,6 +61,7 @@ export interface SessionRegistry {
   activeSessionIds: string[];
   availableModels: string[];
   modelsDiscoveredAt: string | null;
+  modelsDiscoveredCli: string | null;
   sessionMetas: SessionMeta[];
   manualModelsOverride: string[] | null;
 }
@@ -105,7 +106,8 @@ export type WebviewMessage =
   | { command: "selectSession"; sessionId: string }
   | { command: "refreshModels" }
   | { command: "openProgressNotes"; sessionId: string }
-  | { command: "openFinalSummary"; sessionId: string };
+  | { command: "openFinalSummary"; sessionId: string }
+  | { command: "deleteSession"; sessionId: string };
 
 export interface WebviewStatePayload {
   registry: SessionRegistry;
@@ -117,6 +119,7 @@ export interface WebviewStatePayload {
   isRunning: boolean;
   defaultTargetPath: string;
   cliProfile: string;
+  modelsDiscoveredCli: string | null;
 }
 
 export interface ExtensionConfig {
@@ -141,11 +144,30 @@ function normalizePathSetting(value: string | undefined): string {
   return v;
 }
 
+const KNOWN_CLI_BINARIES = new Set(["opencode", "kilo"]);
+const PROFILE_DEFAULT_BINARY: Record<string, string> = {
+  opencode: "opencode",
+  kilo: "kilo",
+};
+
 export function readExtensionConfig(): ExtensionConfig {
   const cfg = vscode.workspace.getConfiguration("agentLoop");
+  const cliProfile = cfg.get<string>("cliProfile", "opencode").trim();
+  let cliBinary = cfg.get<string>("cliBinary", "opencode").trim();
+  // Auto-sync: if cliBinary is one of the known default names and doesn't match the
+  // active profile's default binary, adopt the profile's default. This ensures that
+  // changing only `cliProfile` in settings always yields a coherent (binary, profile) pair.
+  const profileDefaultBinary = PROFILE_DEFAULT_BINARY[cliProfile];
+  if (profileDefaultBinary && KNOWN_CLI_BINARIES.has(cliBinary) && cliBinary !== profileDefaultBinary) {
+    cliBinary = profileDefaultBinary;
+    cfg.update("cliBinary", cliBinary, vscode.ConfigurationTarget.Global).then(
+      () => {},
+      () => {}
+    );
+  }
   return {
-    cliBinary: cfg.get<string>("cliBinary", "opencode").trim(),
-    cliProfile: cfg.get<string>("cliProfile", "opencode").trim(),
+    cliBinary,
+    cliProfile,
     rootDir: normalizePathSetting(cfg.get<string>("rootDir", "")),
     nodeBinary: normalizePathSetting(cfg.get<string>("nodeBinary", "node")) || "node",
     orchestratorScript: normalizePathSetting(cfg.get<string>("orchestratorScript", "")),

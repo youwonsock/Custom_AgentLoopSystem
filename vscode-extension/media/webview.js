@@ -46,12 +46,19 @@
 
   function stateSignature() {
     const st = state.state;
+    // Hash the first/last model + count + discovered-cli to reliably detect any
+    // change in the model list (not just count), so switching opencode<->kilo
+    // always triggers a re-render even if the counts happen to match.
+    const models = state.registry?.availableModels || [];
+    const modelsHash = models.length === 0
+      ? "empty"
+      : `${models.length}|${models[0]}|${models[models.length - 1]}|${state.registry?.modelsDiscoveredCli || ""}`;
     return JSON.stringify({
       s: st ? [st.status, st.phase, st.loopCount, st.updatedAt, st.maxIterations] : null,
       sel: state.selectedSessionId,
       run: state.isRunning,
       metas: (state.registry?.sessionMetas || []).map((m) => [m.sessionId, m.status]),
-      models: state.registry?.availableModels?.length ?? 0,
+      modelsHash,
       disc: state.registry?.modelsDiscoveredAt,
       notesLen: state.progressNotes.length,
       histLen: (state.history || []).length,
@@ -182,7 +189,7 @@
         </div>
         ${composerHtml(false)}
         <div class="card model-card empty-model-card">
-          <h3>Model Mapping (${(state.registry?.availableModels || []).length} models available)</h3>
+          <h3>Model Mapping (${(state.registry?.availableModels || []).length} models${state.registry?.modelsDiscoveredCli ? ` from <span class="model-source">${escapeHtml(state.registry.modelsDiscoveredCli)}</span>` : " — not yet discovered"})</h3>
           ${buildApplyAllHtml()}
           <div class="model-grid">${modelGrid}</div>
           <div class="composer-actions">
@@ -256,6 +263,7 @@
         <select id="session-select">${sessionOptions}</select>
         <button class="btn secondary" id="btn-resume" ${state.isRunning ? "disabled" : ""}>Resume</button>
         <button class="btn danger" id="btn-stop" ${!state.isRunning ? "disabled" : ""}>Stop</button>
+        <button class="btn danger" id="btn-delete" ${!state.selectedSessionId ? "disabled" : ""} title="Delete this session and all its data">Delete</button>
         <button class="btn secondary" id="btn-discover">Models</button>
         <button class="btn secondary" id="btn-open-notes">Notes</button>
       </div>
@@ -265,7 +273,7 @@
           ${statusRows}
         </div>
         <div class="card model-card">
-          <h3>Model Mapping (${(state.registry?.availableModels || []).length} available)</h3>
+          <h3>Model Mapping (${(state.registry?.availableModels || []).length} models${state.registry?.modelsDiscoveredCli ? ` from <span class="model-source">${escapeHtml(state.registry.modelsDiscoveredCli)}</span>` : " — not yet discovered"})</h3>
           ${buildApplyAllHtml()}
           <div class="model-grid">${modelGrid}</div>
         </div>
@@ -295,6 +303,7 @@
     const sessionSelect = document.getElementById("session-select");
     const btnResume = document.getElementById("btn-resume");
     const btnStop = document.getElementById("btn-stop");
+    const btnDelete = document.getElementById("btn-delete");
     const btnDiscover = document.getElementById("btn-discover");
     const btnOpenNotes = document.getElementById("btn-open-notes");
     const btnOpenSummary = document.getElementById("btn-open-summary");
@@ -307,6 +316,9 @@
     };
     if (btnStop) btnStop.onclick = () => {
       if (state.selectedSessionId) vscode.postMessage({ command: "stopSession", sessionId: state.selectedSessionId });
+    };
+    if (btnDelete) btnDelete.onclick = () => {
+      if (state.selectedSessionId) vscode.postMessage({ command: "deleteSession", sessionId: state.selectedSessionId });
     };
     if (btnDiscover) btnDiscover.onclick = () => vscode.postMessage({ command: "discoverModels" });
     if (btnOpenNotes) btnOpenNotes.onclick = () => {
