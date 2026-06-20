@@ -2,7 +2,7 @@
   "name": "agent-loop-vscode",
   "displayName": "Agent Loop Orchestrator",
   "description": "VS Code extension that controls the Custom Agent Loop System CLI to autonomously achieve coding goals via a multi-model multi-session orchestrator.",
-  "version": "1.0.6",
+  "version": "1.1.0",
   "publisher": "custom-agent-loop",
   "license": "MIT",
   "repository": {
@@ -118,6 +118,12 @@
           "type": "string",
           "default": "opencode",
           "description": "Name or path of the coding CLI binary to control."
+        },
+        "agentLoop.cliProfile": {
+          "type": "string",
+          "enum": ["opencode", "kilo"],
+          "default": "opencode",
+          "description": "CLI profile determining command-line interface conventions (run args, model discovery). Auto-detected from cliBinary if unset."
         },
         "agentLoop.rootDir": {
           "type": "string",

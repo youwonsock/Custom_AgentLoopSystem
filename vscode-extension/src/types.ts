@@ -45,6 +45,7 @@ export interface LoopState {
   phaseTimeoutMs: number;
   idleTimeoutMs: number;
   cliBinary: string;
+  cliProfile: string;
 }
 
 export interface SessionMeta {
@@ -97,7 +98,7 @@ export interface SessionBundle {
 
 export type WebviewMessage =
   | { command: "requestState" }
-  | { command: "newSession"; goal: string; targetProjectPath: string; modelMapping: Partial<ModelMapping> }
+  | { command: "newSession"; goal: string; targetProjectPath: string; cliProfile?: string; modelMapping: Partial<ModelMapping> }
   | { command: "resumeSession"; sessionId: string }
   | { command: "stopSession"; sessionId: string }
   | { command: "discoverModels" }
@@ -115,10 +116,12 @@ export interface WebviewStatePayload {
   finalSummary: FinalSummary | null;
   isRunning: boolean;
   defaultTargetPath: string;
+  cliProfile: string;
 }
 
 export interface ExtensionConfig {
   cliBinary: string;
+  cliProfile: string;
   rootDir: string;
   nodeBinary: string;
   orchestratorScript: string;
@@ -128,13 +131,24 @@ export interface ExtensionConfig {
   pollIntervalMs: number;
 }
 
+function normalizePathSetting(value: string | undefined): string {
+  if (!value) return "";
+  let v = value.trim();
+  // Strip surrounding quotes that users often paste in (e.g. "C:\path" or 'C:\path').
+  while (v.length >= 2 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))) {
+    v = v.slice(1, -1).trim();
+  }
+  return v;
+}
+
 export function readExtensionConfig(): ExtensionConfig {
   const cfg = vscode.workspace.getConfiguration("agentLoop");
   return {
-    cliBinary: cfg.get<string>("cliBinary", "opencode"),
-    rootDir: cfg.get<string>("rootDir", ""),
-    nodeBinary: cfg.get<string>("nodeBinary", "node"),
-    orchestratorScript: cfg.get<string>("orchestratorScript", ""),
+    cliBinary: cfg.get<string>("cliBinary", "opencode").trim(),
+    cliProfile: cfg.get<string>("cliProfile", "opencode").trim(),
+    rootDir: normalizePathSetting(cfg.get<string>("rootDir", "")),
+    nodeBinary: normalizePathSetting(cfg.get<string>("nodeBinary", "node")) || "node",
+    orchestratorScript: normalizePathSetting(cfg.get<string>("orchestratorScript", "")),
     maxIterations: cfg.get<number>("maxIterations", 20),
     phaseTimeoutMs: cfg.get<number>("phaseTimeoutMs", 600000),
     idleTimeoutMs: cfg.get<number>("idleTimeoutMs", 90000),

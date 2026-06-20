@@ -1,6 +1,6 @@
 # Custom Agent Loop System
 
-> 대화형 코딩 CLI(`opencode`)를 자식 프로세스로 통제하여, 다수의 AI 에이전트가 자율적으로 목표를 달성하는 **동적 멀티 모델 지정형 멀티 세션 오케스트레이터**.
+> 대화형 코딩 CLI(`opencode`, `kilo` 등)를 자식 프로세스로 통제하여, 다수의 AI 에이전트가 자율적으로 목표를 달성하는 **동적 멀티 모델 지정형 멀티 세션 오케스트레이터**.
 > Node.js/TypeScript 코어 엔진 + VS Code 확장 패널로 구성됩니다.
 
 ---
@@ -9,8 +9,9 @@
 
 ### 런타임
 - **Node.js ≥ 18.0.0**
-- 대상 코딩 CLI(기본 `opencode`)가 설치되어 PATH에 등록되어 있고, 인증/자격증명이 완료되어 있어야 함.
-  - 모델 목록 탐색: `opencode models` 가 정상 응답해야 함.
+- 지원 코딩 CLI 중 하나 이상이 설치되어 PATH에 등록되어 있고, 인증/자격증명이 완료되어 있어야 함:
+  - **opencode** — `npm install -g opencode` → 모델 탐색: `opencode models`
+  - **kilo** — `npm install -g @kilocode/cli` → 모델 탐색: `kilo models`
 - 운영체제: Windows / macOS / Linux (Windows는 `useConpty`, PATHEXT 기반 바이너리 해석 적용).
 
 ### 의존성 (Core 엔진)
@@ -63,27 +64,46 @@ Core 엔진은 **명시적 함수 호출 체인(Explicit Function Call Chain)** 
 ## 3. 핵심 데이터 인터페이스
 
 - **SessionRegistry** — 활성 세션 ID 배열, 외부 CLI에서 동적 획득한 가용 모델 배열(`availableModels`), 탐색 시각, 세션 메타 정보 목록, 수동 모델 오버라이드.
-- **LoopState** — 세션 고유 ID, 실행 상태(`RUNNING`/`PAUSED`/`SUCCESS`/`FAILED`), 현재 페이즈, 루프 카운트, 에이전트별 모델 매핑, Lookback-5 에러 서명 큐, 에이전트별 동작 상태, 타임아웃/최대 반복 설정.
+- **LoopState** — 세션 고유 ID, 실행 상태(`RUNNING`/`PAUSED`/`SUCCESS`/`FAILED`), 현재 페이즈, 루프 카운트, 에이전트별 모델 매핑, Lookback-5 에러 서명 큐, 에이전트별 동작 상태, 타임아웃/최대 반복 설정, `cliBinary` + `cliProfile`.
 - **HandoffPayload** — 정제된 최종 목표, 대상 프로젝트 경로, progressNotes 문자열, 역방향 회귀 시 주입될 직전 실패 다이제스트.
 - **AgentSkills** — 역할, 허용 도구 목록, `enforcedRules`(절대 어기면 안 되는 제약) 배열, systemPrompt.
+- **CliProfile** — CLI 바이너리 이름, 모델 탐색 인자(`modelsArgs`), 실행 인자 빌더(`buildRunArgs`), 상호작용 화이트리스트. `opencode`·`kilo` 내장 프로파일 제공.
 
 ---
 
 ## 4. 작동 방식
 
+### 4.0 다중 CLI 프로파일 시스템 (`CliProfile`)
+본 시스템은 특정 CLI에 종속되지 않습니다. `CliProfile` 인터페이스로 각 CLI의 명령 규약을 추상화합니다:
+
+| 프로파일 | 바이너리 | 실행 명령 | 자율 모드 플래그 | 모델 탐색 |
+|----------|---------|-----------|-----------------|-----------|
+| `opencode` | `opencode` | `opencode run --format json --model <m> --dir <p> --dangerously-skip-permissions <prompt>` | `--dangerously-skip-permissions` | `opencode models` |
+| `kilo` | `kilo` | `kilo run --auto --format json --model <m> --dir <p> <prompt>` | `--auto` | `kilo models` |
+
+- `--profile <name>` CLI 플래그로 명시 지정 가능.
+- 미지정 시 `--binary` 이름에서 자동 감지(`resolveCliProfile`).
+- 각 프로파일은 고유의 `interactionWhitelist`(자동 `y` 응답 패턴)를 가짐. kilo는 `Action Required`/`Run Command (y)` 등 kilo 고유 프롬프트 추가.
+- `LoopState.cliProfile`에 저장되어 resume 시에도 유지.
+- VS Code 확장 설정(`agentLoop.cliProfile`) 및 composer 드롭박스로 UI에서 선택 가능.
+
 ### 4.1 CLI 가용 모델 동적 검색 (`discoverCliModels`)
-Core 기동/초기화 시 시스템 쉘에서 `opencode models`를 실행해 터미널 출력을 파싱합니다. `provider/model` 형식의 라인을 정규식으로 추출해 글로벌 마스터 파일(`sessions_registry.json`)에 저장합니다. VS Code 웹뷰는 이 목록을 드롭다운(공급자별 optgroup 그룹화)으로 실시간 인지합니다.
+Core 기동/초기화 시 활성 프로파일의 `modelsArgs`를 사용해 시스템 쉘에서 `<binary> models`를 실행해 터미널 출력을 파싱합니다. `provider/model` 형식의 라인을 정규식으로 추출해 글로벌 마스터 파일(`sessions_registry.json`)에 저장합니다. VS Code 웹뷰는 이 목록을 드롭다운(공급자별 optgroup 그룹화)으로 실시간 인지합니다.
 
 ### 4.2 node-PTY 자식 프로세스 다중 모델 인젝션
-각 에이전트 페이즈 함수 실행 시, 글로벌 상태에서 해당 에이전트용 지정 모델명을 조회합니다. `node-pty`로 자식 프로세스를 띄울 때 다음 인자를 조립해 주입합니다:
+각 에이전트 페이즈 함수 실행 시, 글로벌 상태에서 해당 에이전트용 지정 모델명을 조회합니다. `node-pty`로 자식 프로세스를 띄울 때 활성 프로파일의 `buildRunArgs()`로 인자를 조립해 주입합니다:
 
 ```
+# opencode 프로파일
 opencode run --format json --model <지정모델명> --dir <targetProjectPath> --dangerously-skip-permissions "<프롬프트>"
+
+# kilo 프로파일
+kilo run --auto --format json --model <지정모델명> --dir <targetProjectPath> "<프롬프트>"
 ```
 
 - PTY의 `cwd`는 유저의 실제 워크스페이스 경로(`targetProjectPath`).
 - 환경변수로 세션 컨텍스트 전파: `AGENT_LOOP_SESSION_ID`, `AGENT_LOOP_AGENT_ROLE`, `AGENT_LOOP_PHASE`.
-- 실시간 출력 스트림을 파싱하여 CLI가 대화형 컨피그를 요구하며 멈추는 패턴(`Apply changes? [y/n]`, `Continue? [y/n]`, `Proceed? [y/n]` 등 화이트리스트)을 포착 시 즉시 `y\n` 가상 입력을 주입하여 **무인 자율 구동**을 실현합니다.
+- 실시간 출력 스트림을 파싱하여 CLI가 대화형 컨피그를 요구하며 멈추는 패턴(`Apply changes? [y/n]`, `Continue? [y/n]`, `Action Required` 등 프로파일별 화이트리스트)을 포착 시 즉시 `y\n` 가상 입력을 주입하여 **무인 자율 구동**을 실현합니다.
 - 페이즈 종료 sentinel 토큰 `[PHASE_DONE]` 감지로 에이전트 완료를 판정합니다.
 
 ### 4.3 Lookback-5 다중 진동 감지 가드레일 (`pushAndCheckOscillation`)
@@ -164,14 +184,15 @@ npm run build      # tsc → dist/loop_orchestrator.js
 # 초기화 (현재 디렉터리에 .goal/ + sessions_registry.json 생성)
 node dist/loop_orchestrator.js init
 
-# 가용 모델 탐색
-node dist/loop_orchestrator.js models [--binary opencode] [--root <path>]
+# 가용 모델 탐색 (프로파일 지정 가능)
+node dist/loop_orchestrator.js models [--binary opencode|kilo] [--profile opencode|kilo] [--root <path>]
 
-# 새 세션 실행
+# 새 세션 실행 (opencode)
 node dist/loop_orchestrator.js run \
   --goal "Add JWT auth to the Express app" \
   --target ./my-project \
   --binary opencode \
+  --profile opencode \
   --max-iterations 20 \
   --phase-timeout 600000 \
   --idle-timeout 90000 \
@@ -179,11 +200,19 @@ node dist/loop_orchestrator.js run \
   [--tester-model <m>] [--qa-model <m>] \
   [--master-model <m>] [--interrupter-model <m>]
 
+# 새 세션 실행 (kilo)
+node dist/loop_orchestrator.js run \
+  --goal "Add JWT auth to the Express app" \
+  --target ./my-project \
+  --binary kilo \
+  --profile kilo \
+  [--planner-model <m>] ...
+
 # 일시정지된 세션 재개
-node dist/loop_orchestrator.js resume --session <sessionId> [--root <path>]
+node dist/loop_orchestrator.js resume --session <sessionId> [--root <path>] [--binary <name>] [--profile <name>]
 ```
 
-모델 미지정 시 발견된 가용 모델 중 첫 번째를 자동 할당하며, 발견 실패 시 폴백 모델(`anthropic/claude-sonnet-4-5`)을 사용합니다.
+`--profile` 미지정 시 `--binary` 이름에서 자동 감지합니다. 모델 미지정 시 발견된 가용 모델 중 첫 번째를 자동 할당하며, 발견 실패 시 폴백 모델(`anthropic/claude-sonnet-4-5`)을 사용합니다.
 
 ---
 
@@ -203,12 +232,13 @@ code --install-extension agent-loop-vscode-<ver>.vsix --force
 
 ### 기능
 - **액티비티바 "Agent Loop" 아이콘** → Sessions 트리 뷰 + 뷰 헤더 버튼(New Session / Show Panel / Discover Models / Refresh).
-- **웹뷰 컨트롤 패널**: Kilo Code 스타일 하단 composer(goal textarea + target 경로 + Start Session), 상단 툴바(세션 선택/Resume/Stop/Models/Notes), 메인 그리드(Status / Model Mapping / Progress Notes / Loop History / Live Log Stream).
-- **모델 드롭다운**: 공급자별 `<optgroup>` 그룹화, 역할별(Planner/Implementer/Tester/QA Lead/Master/Interrupter) 모델 지정.
+- **웹뷰 컨트롤 패널**: Kilo Code 스타일 하단 composer(goal textarea + target 경로 + **CLI 프로파일 드롭박스** + Start Session), 상단 툴바(세션 선택/Resume/Stop/Models/Notes), 메인 그리드(Status / Model Mapping / Progress Notes / Loop History / Live Log Stream).
+- **CLI 프로파일 선택**: composer에서 `opencode`/`kilo` 프로파일 선택. 세션 시작 시 VS Code 설정에 자동 저장.
+- **모델 드롭다운**: 공급자별 `<optgroup>` 그룹화, 역할별(Planner/Implementer/Tester/QA Lead/Master/Interrupter) 모델 지정 + **"Apply to all" 일괄 설정 드롭박스**.
 - **드롭다운 자동 닫힘 방지**: 폴링 기반 재렌더 시 상호작용 가드 + 상태 시그니처 스킵으로 열려 있는 `<select>`가 파괴되지 않음.
 - **Compose 모드**: "New Session" 클릭 시 기존 세션 유무와 무관하게 composer 뷰 고정(ESC/Cancel로 취소).
 - **실시간 로그 스트리밍**: Core 자식 프로세스 stdout/stderr를 가로채 패널에 출력.
-- **설정(`agentLoop.*`)**: `cliBinary`, `rootDir`, `nodeBinary`, `orchestratorScript`, `maxIterations`, `phaseTimeoutMs`, `idleTimeoutMs`, `pollIntervalMs`.
+- **설정(`agentLoop.*`)**: `cliBinary`, `cliProfile`(`opencode`|`kilo`), `rootDir`, `nodeBinary`, `orchestratorScript`, `maxIterations`, `phaseTimeoutMs`, `idleTimeoutMs`, `pollIntervalMs`.
 
 > 참고: 테스트 명령(`testCommand`)과 포트 세정(`portsToClean`) 설정은 AI 주도 테스트 전환에 따라 제거되었습니다.
 

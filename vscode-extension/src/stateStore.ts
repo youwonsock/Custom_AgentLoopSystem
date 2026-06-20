@@ -9,6 +9,7 @@ import {
   SessionRegistry,
   LoopHistoryEntry,
   FinalSummary,
+  readExtensionConfig,
 } from "./types";
 
 let globalContext: vscode.ExtensionContext | undefined;
@@ -22,20 +23,48 @@ export class StateStore {
   constructor(private readonly config: ExtensionConfig) {}
 
   async getRootDir(): Promise<string> {
+    const liveRootDir = readExtensionConfig().rootDir;
+    if (liveRootDir && liveRootDir.length > 0) {
+      return path.resolve(liveRootDir);
+    }
     if (this.config.rootDir && this.config.rootDir.length > 0) {
       return path.resolve(this.config.rootDir);
+    }
+    const envRoot = process.env.AGENT_LOOP_ROOT;
+    if (envRoot && envRoot.length > 0) {
+      const resolved = path.resolve(envRoot);
+      try {
+        await fs.access(path.join(resolved, "dist", "loop_orchestrator.js"));
+        await this.cacheDetectedRoot(resolved);
+        return resolved;
+      } catch {
+        // env var stale, continue
+      }
+    }
+    if (globalContext) {
+      const cached = globalContext.globalState.get<string>("agentLoop.detectedRoot");
+      if (cached && cached.length > 0) {
+        try {
+          await fs.access(path.join(cached, "dist", "loop_orchestrator.js"));
+          return cached;
+        } catch {
+          // stale cache, fall through
+        }
+      }
     }
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
       const distScript = path.join(folder.uri.fsPath, "dist", "loop_orchestrator.js");
       const registry = path.join(folder.uri.fsPath, "sessions_registry.json");
       try {
         await fs.access(distScript);
+        await this.cacheDetectedRoot(folder.uri.fsPath);
         return folder.uri.fsPath;
       } catch {
         // not here
       }
       try {
         await fs.access(registry);
+        await this.cacheDetectedRoot(folder.uri.fsPath);
         return folder.uri.fsPath;
       } catch {
         // not here
@@ -49,6 +78,16 @@ export class StateStore {
     const defaultDir = path.join(os.homedir(), ".agent-loop");
     await fs.mkdir(defaultDir, { recursive: true });
     return defaultDir;
+  }
+
+  private async cacheDetectedRoot(root: string): Promise<void> {
+    if (globalContext) {
+      try {
+        await globalContext.globalState.update("agentLoop.detectedRoot", root);
+      } catch {
+        // ignore persistence failure
+      }
+    }
   }
 
   getRegistryPath = async (): Promise<string> => {

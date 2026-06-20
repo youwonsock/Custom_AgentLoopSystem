@@ -10,6 +10,7 @@
     finalSummary: null,
     isRunning: false,
     defaultTargetPath: "",
+    cliProfile: "opencode",
   };
 
   let logBuffer = "";
@@ -34,6 +35,7 @@
   // Composer state persisted across re-renders so user input is not lost.
   let composerGoal = "";
   let composerTarget = "";
+  let composerProfile = "opencode";
   let composerInitialized = false;
 
   // Re-render guard: while the user is interacting with a form control
@@ -55,6 +57,7 @@
       histLen: (state.history || []).length,
       hasSummary: !!state.finalSummary,
       defTarget: state.defaultTargetPath,
+      cliProfile: state.cliProfile,
     });
   }
 
@@ -113,6 +116,19 @@
       .join("");
   }
 
+  function buildApplyAllHtml() {
+    const { grouped, providerNames } = buildGroupedModels();
+    const allSame = agentRoles.every((r) => (modelSelections[r] || "") === (modelSelections[agentRoles[0]] || ""));
+    const currentBulk = allSame ? (modelSelections[agentRoles[0]] || "") : "";
+    return `
+      <div class="apply-all-row">
+        <label class="apply-all-label">Apply to all</label>
+        <select id="apply-all-model" class="model-select apply-all-select">
+          ${buildModelOptions(currentBulk, grouped, providerNames)}
+        </select>
+      </div>`;
+  }
+
   function composerHtml(compact) {
     const goalVal = escapeHtml(composerGoal);
     const targetVal = escapeHtml(composerTarget || composerTargetDefault());
@@ -120,11 +136,17 @@
     const textareaClass = compact ? "composer-goal" : "composer-goal composer-goal-large";
     const rows = compact ? 2 : 4;
     const cancelBtn = composingNew ? `<button class="btn secondary" id="composer-cancel">Cancel</button>` : "";
+    const targetPlaceholder = composerTargetDefault() ? "" : "Target project path (current workspace)";
+    const currentProfile = state.state?.cliProfile || state.cliProfile || "opencode";
     return `
       <div class="${wrapClass}" id="composer">
         <textarea id="composer-goal" class="${textareaClass}" rows="${rows}" placeholder="Describe the goal for the agent loop to achieve... (Ctrl+Enter to start)">${goalVal}</textarea>
         <div class="composer-meta">
-          <input type="text" id="composer-target" class="composer-input" placeholder="Target project path" value="${targetVal}" />
+          <input type="text" id="composer-target" class="composer-input" placeholder="${targetPlaceholder}" value="${targetVal}" title="Target project path where agents will modify and test code. Defaults to the current workspace folder." />
+          <select id="composer-profile" class="composer-input composer-input-sm" title="CLI profile (command conventions)">
+            <option value="opencode"${currentProfile === "opencode" ? " selected" : ""}>opencode</option>
+            <option value="kilo"${currentProfile === "kilo" ? " selected" : ""}>kilo</option>
+          </select>
           <button class="btn" id="composer-start">Start Session</button>
           ${cancelBtn}
         </div>
@@ -161,6 +183,7 @@
         ${composerHtml(false)}
         <div class="card model-card empty-model-card">
           <h3>Model Mapping (${(state.registry?.availableModels || []).length} models available)</h3>
+          ${buildApplyAllHtml()}
           <div class="model-grid">${modelGrid}</div>
           <div class="composer-actions">
             <button class="btn secondary" id="btn-discover">Discover Models</button>
@@ -203,6 +226,7 @@
         <div class="status-row"><span class="label">Loop</span><span class="value">${st.loopCount} / ${st.maxIterations}</span></div>
         <div class="status-row"><span class="label">Goal</span><span class="value" style="text-align:right;max-width:60%;overflow:hidden;text-overflow:ellipsis">${escapeHtml(String(st.goal).slice(0, 80))}</span></div>
         <div class="status-row"><span class="label">Target</span><span class="value" style="text-align:right;max-width:60%;overflow:hidden;text-overflow:ellipsis">${escapeHtml(String(st.targetProjectPath).slice(0, 60))}</span></div>
+        <div class="status-row"><span class="label">CLI</span><span class="value">${escapeHtml(st.cliProfile || "opencode")} / ${escapeHtml(st.cliBinary || "")}</span></div>
         ${st.errorQueue && st.errorQueue.length > 0 ? `<div class="error-queue"><div class="status-row" style="display:block"><span class="label">Error Queue (Lookback-5):</span></div>${st.errorQueue
           .map((e) => `<div class="error-queue-item">[${escapeHtml(e.phase)}] ${escapeHtml(e.signature)}</div>`)
           .join("")}</div>` : ""}
@@ -242,6 +266,7 @@
         </div>
         <div class="card model-card">
           <h3>Model Mapping (${(state.registry?.availableModels || []).length} available)</h3>
+          ${buildApplyAllHtml()}
           <div class="model-grid">${modelGrid}</div>
         </div>
         <div class="card notes-card">
@@ -299,6 +324,17 @@
         modelSelections[role] = e.target.value;
       };
     });
+    const applyAll = document.getElementById("apply-all-model");
+    if (applyAll) applyAll.onchange = (e) => {
+      const val = e.target.value;
+      for (const role of agentRoles) {
+        modelSelections[role] = val;
+      }
+      document.querySelectorAll("select[data-role]").forEach((sel) => {
+        const role = sel.getAttribute("data-role");
+        if (role) sel.value = val;
+      });
+    };
   }
 
   function bindComposer() {
@@ -308,7 +344,13 @@
     const cancelBtn = document.getElementById("composer-cancel");
 
     if (!composerInitialized) {
-      if (!composerTarget) composerTarget = composerTargetDefault();
+      const def = composerTargetDefault();
+      if (def && (!composerTarget || composerTarget.length === 0)) {
+        composerTarget = def;
+      }
+    } else if (!composerTarget || composerTarget.length === 0) {
+      const def = composerTargetDefault();
+      if (def) composerTarget = def;
     }
 
     if (goalEl) {
@@ -328,6 +370,11 @@
     if (targetEl) {
       targetEl.value = composerTarget;
       targetEl.oninput = (e) => { composerTarget = e.target.value; };
+    }
+    const profileEl = document.getElementById("composer-profile");
+    if (profileEl) {
+      profileEl.value = composerProfile;
+      profileEl.onchange = (e) => { composerProfile = e.target.value; };
     }
     if (startBtn) startBtn.onclick = () => sendNewSession();
     if (cancelBtn) cancelBtn.onclick = () => cancelCompose();
@@ -351,6 +398,7 @@
       command: "newSession",
       goal: goal.trim(),
       targetProjectPath: (composerTarget || composerTargetDefault()).trim(),
+      cliProfile: composerProfile || "opencode",
       modelMapping: mapping,
     });
     composingNew = false;

@@ -1,16 +1,19 @@
 import * as vscode from "vscode";
-import { readExtensionConfig, SessionMeta } from "./types";
+import { readExtensionConfig, SessionMeta, ExtensionConfig } from "./types";
 import { StateStore, setGlobalContext } from "./stateStore";
 import { LoopClient } from "./loopClient";
 import { LoopWebviewPanel } from "./webviewPanel";
 
 let store: StateStore | undefined;
 let client: LoopClient | undefined;
+let config: ExtensionConfig;
+let globalContext: vscode.ExtensionContext | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   setGlobalContext(context);
+  globalContext = context;
 
-  const config = readExtensionConfig();
+  config = readExtensionConfig();
   store = new StateStore(config);
   client = new LoopClient(config, store);
 
@@ -148,6 +151,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     vscode.commands.registerCommand("agentLoop.refresh", async () => {
       sessionExplorerProvider.refresh();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("agentLoop")) {
+        const freshConfig = readExtensionConfig();
+        config = freshConfig;
+        if (store) { (store as any).config = freshConfig; }
+        if (client) { (client as any).config = freshConfig; }
+        try {
+          globalContext?.globalState.update("agentLoop.detectedRoot", undefined).then(() => {}, () => {});
+        } catch {
+          // ignore
+        }
+        sessionExplorerProvider.refresh();
+        vscode.window.showInformationMessage("Agent Loop: Configuration updated. Re-discover models if needed.");
+      }
     })
   );
 

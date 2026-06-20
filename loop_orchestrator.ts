@@ -89,6 +89,7 @@ interface LoopState {
   phaseTimeoutMs: number;
   idleTimeoutMs: number;
   cliBinary: string;
+  cliProfile: string;
 }
 
 interface SessionMeta {
@@ -179,6 +180,7 @@ interface SpawnCliOptions {
   timeoutMs: number;
   idleTimeoutMs: number;
   cliBinary: string;
+  cliProfile: CliProfile;
   phaseLabel: string;
 }
 
@@ -210,6 +212,67 @@ const DESTRUCTIVE_PROMPTS: string[] = [
   "Drop table",
   "Drop database",
 ];
+
+interface CliProfile {
+  name: string;
+  defaultBinary: string;
+  modelsArgs: string[];
+  buildRunArgs: (opts: { model: string; targetProjectPath: string; prompt: string }) => string[];
+  interactionWhitelist: string[];
+}
+
+const OPENCODE_PROFILE: CliProfile = {
+  name: "opencode",
+  defaultBinary: "opencode",
+  modelsArgs: ["models"],
+  buildRunArgs: (opts) => [
+    "run",
+    "--format", "json",
+    "--model", opts.model,
+    "--dir", opts.targetProjectPath,
+    "--dangerously-skip-permissions",
+    opts.prompt,
+  ],
+  interactionWhitelist: INTERACTION_WHITELIST,
+};
+
+const KILO_PROFILE: CliProfile = {
+  name: "kilo",
+  defaultBinary: "kilo",
+  modelsArgs: ["models"],
+  buildRunArgs: (opts) => [
+    "run",
+    "--auto",
+    "--format", "json",
+    "--model", opts.model,
+    "--dir", opts.targetProjectPath,
+    opts.prompt,
+  ],
+  interactionWhitelist: [
+    ...INTERACTION_WHITELIST,
+    "Action Required",
+    "Run Command (y)",
+    "Allow (y)",
+  ],
+};
+
+const CLI_PROFILES: Record<string, CliProfile> = {
+  opencode: OPENCODE_PROFILE,
+  kilo: KILO_PROFILE,
+};
+
+function resolveCliProfile(profileName: string | null, binaryName: string): CliProfile {
+  if (profileName && CLI_PROFILES[profileName]) {
+    return CLI_PROFILES[profileName];
+  }
+  const lower = binaryName.toLowerCase();
+  for (const profile of Object.values(CLI_PROFILES)) {
+    if (lower === profile.defaultBinary || lower === profile.name) {
+      return profile;
+    }
+  }
+  return OPENCODE_PROFILE;
+}
 
 const DEFAULT_MAX_ITERATIONS = 20;
 const DEFAULT_PHASE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -406,14 +469,11 @@ function generateSessionId(): string {
 }
 
 function spawnCliPty(opts: SpawnCliOptions): SpawnHandle {
-  const args: string[] = [
-    "run",
-    "--format", "json",
-    "--model", opts.model,
-    "--dir", opts.targetProjectPath,
-    "--dangerously-skip-permissions",
-    opts.prompt,
-  ];
+  const args = opts.cliProfile.buildRunArgs({
+    model: opts.model,
+    targetProjectPath: opts.targetProjectPath,
+    prompt: opts.prompt,
+  });
 
   const env: { [key: string]: string } = {};
   for (const [k, v] of Object.entries(process.env)) {
@@ -498,7 +558,7 @@ function spawnCliPty(opts: SpawnCliOptions): SpawnHandle {
 
         const lower = trimmed.toLowerCase();
         const isDestructive = DESTRUCTIVE_PROMPTS.some((p) => lower.includes(p.toLowerCase()));
-        const matchedWhitelist = INTERACTION_WHITELIST.find((p) => lower.includes(p.toLowerCase()));
+        const matchedWhitelist = opts.cliProfile.interactionWhitelist.find((p) => lower.includes(p.toLowerCase()));
 
         if (matchedWhitelist && !isDestructive) {
           const response = "y\n";
@@ -516,18 +576,18 @@ function spawnCliPty(opts: SpawnCliOptions): SpawnHandle {
   return { pid, done };
 }
 
-function discoverCliModels(cliBinary: string, override: string[] | null): Promise<string[]> {
+function discoverCliModels(cliBinary: string, override: string[] | null, profile: CliProfile): Promise<string[]> {
   if (override && override.length > 0) {
     return Promise.resolve(override);
   }
   return new Promise<string[]>((resolve) => {
     execFile(
       cliBinary,
-      ["models"],
+      profile.modelsArgs,
       { maxBuffer: 10 * 1024 * 1024, timeout: 30 * 1000, shell: process.platform === "win32" },
       (err, stdout, stderr) => {
       if (err) {
-        console.warn(`[discoverCliModels] Failed to run '${cliBinary} models': ${err.message}`);
+        console.warn(`[discoverCliModels] Failed to run '${cliBinary} ${profile.modelsArgs.join(" ")}': ${err.message}`);
         resolve([]);
         return;
       }
@@ -773,7 +833,7 @@ Custom Agent Loop System - Dynamic Multi-Model Multi-Session Orchestrator
 
 Usage:
   agent-loop init                                    Initialize the system in the current directory
-  agent-loop models [--binary opencode]              List available CLI models
+  agent-loop models [--binary opencode] [--profile]  List available CLI models
   agent-loop run --goal "..." --target "..." [opts]  Start a new session
   agent-loop resume --session <id> [opts]            Resume a paused session
 
@@ -781,6 +841,7 @@ Options for 'run':
   --goal <text>              The goal to achieve (required)
   --target <path>            Target project path (default: cwd)
   --binary <name>            CLI binary name (default: opencode)
+  --profile <name>           CLI profile: opencode | kilo (auto-detected from --binary)
   --max-iterations <n>       Max loop iterations (default: 20)
   --phase-timeout <ms>       Phase timeout in ms (default: 600000)
   --idle-timeout <ms>        Idle timeout in ms (default: 90000)
@@ -1151,6 +1212,7 @@ class LoopOrchestrator {
       timeoutMs: this.state.phaseTimeoutMs,
       idleTimeoutMs: this.state.idleTimeoutMs,
       cliBinary: this.state.cliBinary,
+      cliProfile: resolveCliProfile(this.state.cliProfile, this.state.cliBinary),
       phaseLabel: this.state.phase,
     });
 
@@ -1319,6 +1381,7 @@ function createDefaultLoopState(
   targetProjectPath: string,
   modelMapping: ModelMapping,
   cliBinary: string,
+  cliProfile: string,
   maxIterations: number,
   phaseTimeoutMs: number,
   idleTimeoutMs: number
@@ -1353,6 +1416,7 @@ function createDefaultLoopState(
     phaseTimeoutMs,
     idleTimeoutMs,
     cliBinary,
+    cliProfile,
   };
 }
 
@@ -1411,10 +1475,11 @@ async function cmdInit(rootDir: string): Promise<void> {
 
 async function cmdModels(parsed: Record<string, string>, rootDir: string): Promise<void> {
   const cliBinary = parsed.binary || "opencode";
+  const profile = resolveCliProfile(parsed.profile ?? null, cliBinary);
   const registryPath = path.join(rootDir, "sessions_registry.json");
   const registry = await atomicReadJson<SessionRegistry>(registryPath);
   const override = registry?.manualModelsOverride ?? null;
-  const models = await discoverCliModels(cliBinary, override);
+  const models = await discoverCliModels(cliBinary, override, profile);
 
   if (registry) {
     registry.availableModels = models;
@@ -1423,8 +1488,8 @@ async function cmdModels(parsed: Record<string, string>, rootDir: string): Promi
   }
 
   if (models.length === 0) {
-    console.log(`No models discovered from '${cliBinary} models'.`);
-    console.log(`Check that '${cliBinary}' is installed and authenticated.`);
+    console.log(`No models discovered from '${cliBinary} ${profile.modelsArgs.join(" ")}'.`);
+    console.log(`Check that '${cliBinary}' is installed and authenticated (profile: ${profile.name}).`);
   } else {
     console.log(`Available models (${models.length}):`);
     for (const m of models) {
@@ -1443,6 +1508,7 @@ async function cmdRun(parsed: Record<string, string>, rootDir: string): Promise<
 
   const targetProjectPath = parsed.target && parsed.target !== "true" ? parsed.target : process.cwd();
   const cliBinary = parsed.binary && parsed.binary !== "true" ? parsed.binary : "opencode";
+  const profile = resolveCliProfile(parsed.profile ?? null, cliBinary);
   const maxIterations = parseIntSafe(parsed["max-iterations"], DEFAULT_MAX_ITERATIONS);
   const phaseTimeoutMs = parseIntSafe(parsed["phase-timeout"], DEFAULT_PHASE_TIMEOUT_MS);
   const idleTimeoutMs = parseIntSafe(parsed["idle-timeout"], DEFAULT_IDLE_TIMEOUT_MS);
@@ -1459,8 +1525,9 @@ async function cmdRun(parsed: Record<string, string>, rootDir: string): Promise<
   }
   const reg: SessionRegistry = registry;
 
+  console.log(`[orchestrator] CLI profile: ${profile.name} | binary: ${cliBinary}`);
   console.log(`[orchestrator] Discovering available models from '${cliBinary}'...`);
-  const models = await discoverCliModels(cliBinary, reg.manualModelsOverride);
+  const models = await discoverCliModels(cliBinary, reg.manualModelsOverride, profile);
   reg.availableModels = models;
   reg.modelsDiscoveredAt = new Date().toISOString();
   await atomicWriteJson(registryPath, reg);
@@ -1490,6 +1557,7 @@ async function cmdRun(parsed: Record<string, string>, rootDir: string): Promise<
     targetProjectPath,
     modelMapping,
     cliBinary,
+    profile.name,
     maxIterations,
     phaseTimeoutMs,
     idleTimeoutMs
@@ -1548,6 +1616,9 @@ async function cmdResume(parsed: Record<string, string>, rootDir: string): Promi
   if (parsed["max-iterations"]) state.maxIterations = parseIntSafe(parsed["max-iterations"], state.maxIterations);
   if (parsed["phase-timeout"]) state.phaseTimeoutMs = parseIntSafe(parsed["phase-timeout"], state.phaseTimeoutMs);
   if (parsed["idle-timeout"]) state.idleTimeoutMs = parseIntSafe(parsed["idle-timeout"], state.idleTimeoutMs);
+  if (parsed.binary && parsed.binary !== "true") state.cliBinary = parsed.binary;
+  if (parsed.profile && parsed.profile !== "true") state.cliProfile = parsed.profile;
+  if (!state.cliProfile) state.cliProfile = resolveCliProfile(null, state.cliBinary).name;
 
   if (state.status === LoopStatus.PAUSED) {
     state.status = LoopStatus.RUNNING;

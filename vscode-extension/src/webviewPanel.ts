@@ -9,6 +9,7 @@ import {
   FinalSummary,
   ModelMapping,
   ExtensionConfig,
+  readExtensionConfig,
 } from "./types";
 import { StateStore } from "./stateStore";
 import { LoopClient, LogEntry } from "./loopClient";
@@ -134,7 +135,7 @@ export class LoopWebviewPanel {
     this.postMessage({ command: "focusComposer" });
   }
 
-  private async handleNewSession(msg: { goal: string; targetProjectPath: string; modelMapping: Partial<ModelMapping> }): Promise<void> {
+  private async handleNewSession(msg: { goal: string; targetProjectPath: string; cliProfile?: string; modelMapping: Partial<ModelMapping> }): Promise<void> {
     if (!msg.goal || msg.goal.trim().length === 0) {
       vscode.window.showErrorMessage("Goal is required.");
       return;
@@ -142,6 +143,11 @@ export class LoopWebviewPanel {
     const target = msg.targetProjectPath && msg.targetProjectPath.length > 0
       ? msg.targetProjectPath
       : vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+
+    if (msg.cliProfile) {
+      const cfg = vscode.workspace.getConfiguration("agentLoop");
+      await cfg.update("cliProfile", msg.cliProfile, vscode.ConfigurationTarget.Global);
+    }
 
     try {
       const sessionId = await this.client.startNewSession({
@@ -245,6 +251,7 @@ export class LoopWebviewPanel {
     const isRunning = this.selectedSessionId ? this.client.isRunning(this.selectedSessionId) : false;
 
     const defaultTargetPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const liveCfg = readExtensionConfig();
 
     const payload: WebviewStatePayload = {
       registry,
@@ -255,6 +262,7 @@ export class LoopWebviewPanel {
       finalSummary,
       isRunning,
       defaultTargetPath,
+      cliProfile: liveCfg.cliProfile,
     };
 
     this.postMessage({ command: "stateUpdate", payload });

@@ -2,7 +2,7 @@ import { ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { ExtensionConfig, ModelMapping } from "./types";
+import { ExtensionConfig, ModelMapping, readExtensionConfig } from "./types";
 import { StateStore } from "./stateStore";
 
 export interface NewSessionOptions {
@@ -28,17 +28,38 @@ export class LoopClient {
   ) {}
 
   async resolveOrchestratorScript(): Promise<string> {
-    if (this.config.orchestratorScript && this.config.orchestratorScript.length > 0) {
-      return path.resolve(this.config.orchestratorScript);
-    }
+    const liveScript = readExtensionConfig().orchestratorScript;
     const candidates: string[] = [];
+    const addCandidate = async (p: string) => {
+      if (!p || p.length === 0) return;
+      const resolved = path.resolve(p);
+      try {
+        const stat = await fs.stat(resolved);
+        if (stat.isDirectory()) {
+          candidates.push(path.join(resolved, "dist", "loop_orchestrator.js"));
+        } else {
+          candidates.push(resolved);
+        }
+      } catch {
+        candidates.push(resolved);
+      }
+    };
+    if (liveScript && liveScript.length > 0) {
+      await addCandidate(liveScript);
+    }
+    if (this.config.orchestratorScript && this.config.orchestratorScript.length > 0) {
+      await addCandidate(this.config.orchestratorScript);
+    }
     const root = await this.store.getRootDir();
     candidates.push(path.join(root, "dist", "loop_orchestrator.js"));
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
       candidates.push(path.join(folder.uri.fsPath, "dist", "loop_orchestrator.js"));
     }
     candidates.push(path.join(process.cwd(), "dist", "loop_orchestrator.js"));
+    const seen = new Set<string>();
     for (const candidate of candidates) {
+      if (seen.has(candidate)) continue;
+      seen.add(candidate);
       try {
         await fs.access(candidate);
         return candidate;
@@ -46,13 +67,28 @@ export class LoopClient {
         // try next
       }
     }
-    return candidates[0];
+    const missing = candidates[0];
+    throw new Error(
+      `Orchestrator script not found. Looked for:\n  ${missing}\nSet "Agent Loop: Root Dir" in Settings to the Custom_AgentLoopSystem install path (the folder containing dist/loop_orchestrator.js).`
+    );
+  }
+
+  private liveConfig(): ExtensionConfig {
+    return readExtensionConfig();
   }
 
   async discoverModels(): Promise<string[]> {
     const root = await this.store.getRootDir();
-    const script = await this.resolveOrchestratorScript();
-    const args = ["models", "--binary", this.config.cliBinary, "--root", root];
+    let script: string;
+    try {
+      script = await this.resolveOrchestratorScript();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(msg);
+      return [];
+    }
+    const cfg = this.liveConfig();
+    const args = ["models", "--binary", cfg.cliBinary, "--profile", cfg.cliProfile, "--root", root];
     return new Promise<string[]>((resolve) => {
       const child = spawn(this.config.nodeBinary, [script, ...args], {
         cwd: root,
@@ -70,7 +106,7 @@ export class LoopClient {
         vscode.window.showErrorMessage(`Failed to run model discovery: ${err.message}`);
         resolve([]);
       });
-      child.on("exit", () => {
+      child.on("exit", (code) => {
         const models: string[] = [];
         const lines = stdout.split("\n");
         for (const line of lines) {
@@ -83,6 +119,13 @@ export class LoopClient {
             }
           }
         }
+        if (models.length === 0) {
+          const hint =
+            code !== 0
+              ? `Orchestrator exited with code ${code}. Stderr: ${stderr.slice(0, 300)}`
+              : `No models parsed. Verify '${this.config.cliBinary} models' works in a terminal. Script: ${script}`;
+          vscode.window.showWarningMessage(`Agent Loop: Discovered 0 models. ${hint}`);
+        }
         resolve(models);
       });
     });
@@ -91,17 +134,19 @@ export class LoopClient {
   async startNewSession(opts: NewSessionOptions): Promise<string> {
     const root = await this.store.getRootDir();
     const script = await this.resolveOrchestratorScript();
+    const cfg = this.liveConfig();
 
     const args: string[] = [
       script,
       "run",
       "--goal", opts.goal,
       "--target", opts.targetProjectPath,
-      "--binary", this.config.cliBinary,
+      "--binary", cfg.cliBinary,
+      "--profile", cfg.cliProfile,
       "--root", root,
-      "--max-iterations", String(this.config.maxIterations),
-      "--phase-timeout", String(this.config.phaseTimeoutMs),
-      "--idle-timeout", String(this.config.idleTimeoutMs),
+      "--max-iterations", String(cfg.maxIterations),
+      "--phase-timeout", String(cfg.phaseTimeoutMs),
+      "--idle-timeout", String(cfg.idleTimeoutMs),
     ];
 
     if (opts.modelMapping.planner) args.push("--planner-model", opts.modelMapping.planner);
