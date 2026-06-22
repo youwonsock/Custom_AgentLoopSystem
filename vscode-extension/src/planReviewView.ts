@@ -114,6 +114,14 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
       case "selectPlanChoice": {
         const sessionId = msg.sessionId;
         if (!sessionId) return;
+        if (msg.choiceId === -1) {
+          try {
+            const planPath = await this.store.getPlanMdPath(sessionId);
+            await fs.promises.unlink(planPath);
+          } catch { /* plan.md may not exist */ }
+          await this.pushState();
+          break;
+        }
         const choicesPath = await this.store.getPlanChoicesPath(sessionId);
         try {
           const raw = await fs.promises.readFile(choicesPath, "utf8");
@@ -154,8 +162,6 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
           const raw = await fs.promises.readFile(statePath, "utf8");
           const state: LoopState = JSON.parse(raw);
           state.planApproved = true;
-          state.awaitingPlanApproval = false;
-          state.status = "RUNNING";
           await fs.promises.writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
           vscode.window.showInformationMessage(`Plan approved for ${sessionId}. Resuming session...`);
           await this.client.resumeSession(sessionId);
@@ -296,7 +302,7 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
 
     function renderChoosing(root) {
       const choicesHtml = (state.choices || []).map(function(c) {
-        return '<div class="choice-card" onclick="selectChoice(' + c.id + ')"><div class="choice-title">' + escapeHtml(c.title) + '</div><div class="choice-preview">' + escapeHtml(c.body.slice(0, 200)) + '</div></div>';
+        return '<div class="choice-card" data-choice-id="' + c.id + '"><div class="choice-title">' + escapeHtml(c.title) + '</div><div class="choice-preview">' + escapeHtml(c.body.slice(0, 200)) + '</div></div>';
       }).join("");
       root.innerHTML = '<h3>Plan Options</h3>' + choicesHtml;
     }
@@ -366,6 +372,13 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
         vscode.postMessage({ command: "selectPlanChoice", sessionId: state.sessionId, choiceId: -1 });
       };
     }
+
+    document.getElementById("root").addEventListener("click", function(e) {
+      const card = e.target.closest(".choice-card");
+      if (card && card.dataset.choiceId) {
+        selectChoice(parseInt(card.dataset.choiceId, 10));
+      }
+    });
 
     vscode.postMessage({ command: "requestPlanReviewState" });
   </script>

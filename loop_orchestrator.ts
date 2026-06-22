@@ -7,6 +7,21 @@ import { execFile, exec } from "node:child_process";
 import * as fse from "fs-extra";
 import * as pty from "node-pty";
 
+function resolveCmdToExe(cmdPath: string): string {
+  try {
+    const content = fs.readFileSync(cmdPath, "utf8");
+    const cmdDir = path.dirname(cmdPath);
+    const exeMatch = content.match(/"%dp0%\\([^"]+\.exe)"/i);
+    if (exeMatch) {
+      const resolved = path.join(cmdDir, exeMatch[1]);
+      if (fs.existsSync(resolved)) return resolved;
+    }
+  } catch {
+    // ignore read errors
+  }
+  return cmdPath;
+}
+
 function resolveBinaryOnWindows(binary: string): string {
   if (process.platform !== "win32") return binary;
   if (path.extname(binary).length > 0) return binary;
@@ -18,7 +33,14 @@ function resolveBinaryOnWindows(binary: string): string {
     for (const ext of extensions) {
       const candidate = path.join(dir, binary + ext);
       try {
-        if (fs.existsSync(candidate)) return candidate;
+        if (fs.existsSync(candidate)) {
+          const extLower = ext.toLowerCase();
+          if (extLower === ".cmd" || extLower === ".bat") {
+            const resolved = resolveCmdToExe(candidate);
+            if (resolved !== candidate) return resolved;
+          }
+          return candidate;
+        }
       } catch {
         // ignore inaccessible entries
       }
@@ -675,7 +697,7 @@ async function atomicAppendLine(filePath: string, line: string): Promise<void> {
 
 function stripAnsi(str: string): string {
   return str
-    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
     .replace(/\x1b\][^\x07]*(\x07|\x1b\\)/g, "")
     .replace(/\x1b[()][AB012]/g, "")
     .replace(/\x1b[=>]/g, "")
@@ -757,14 +779,15 @@ function spawnCliPty(opts: SpawnCliOptions): SpawnHandle {
 
   const pid = ptyProc.pid;
 
-  const done = new Promise<PtyRunResult>((resolve) => {
-    const lineBuffer = new LineBuffer();
-    const events: AnyObj[] = [];
-    const autoInjected: { prompt: string; response: string; timestamp: string }[] = [];
-    let output = "";
-    let resolved = false;
-    let idleTimer: NodeJS.Timeout | null = null;
-    let phaseTimer: NodeJS.Timeout | null = null;
+    const done = new Promise<PtyRunResult>((resolve) => {
+      const lineBuffer = new LineBuffer();
+      const events: AnyObj[] = [];
+      const autoInjected: { prompt: string; response: string; timestamp: string }[] = [];
+      let output = "";
+      let resolved = false;
+      let idleTimer: NodeJS.Timeout | null = null;
+      let phaseTimer: NodeJS.Timeout | null = null;
+      let jsonReassemblyBuffer = "";
 
     const finish = (result: Omit<PtyRunResult, "pid">) => {
       if (resolved) return;
@@ -808,12 +831,28 @@ function spawnCliPty(opts: SpawnCliOptions): SpawnHandle {
         const trimmed = line.trim();
         if (trimmed.length === 0) continue;
 
-        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-          try {
-            const evt = JSON.parse(trimmed) as AnyObj;
-            events.push(evt);
-          } catch {
-            // Not a valid JSON line, skip
+        if (jsonReassemblyBuffer.length > 0) {
+          jsonReassemblyBuffer += trimmed;
+          if (jsonReassemblyBuffer.endsWith("}")) {
+            try {
+              const evt = JSON.parse(jsonReassemblyBuffer) as AnyObj;
+              events.push(evt);
+            } catch {
+              // Genuinely invalid JSON, discard
+            }
+            jsonReassemblyBuffer = "";
+          }
+        } else if (trimmed.startsWith("{")) {
+          if (trimmed.endsWith("}")) {
+            try {
+              const evt = JSON.parse(trimmed) as AnyObj;
+              events.push(evt);
+            } catch {
+              // Starts with { and ends with } but invalid — try accumulating anyway
+              jsonReassemblyBuffer = trimmed;
+            }
+          } else {
+            jsonReassemblyBuffer = trimmed;
           }
         }
 
@@ -992,6 +1031,22 @@ function extractFailureDigest(testLog: string): string {
 function extractOutput(result: PtyRunResult): string {
   const messages: string[] = [];
   for (const evt of result.events) {
+    if (evt.type === "text") {
+      const part = evt.part as Record<string, unknown> | undefined;
+      const text = part && typeof part.text === "string" ? (part.text as string) : null;
+      if (text && text.length > 0) {
+        messages.push(text);
+        continue;
+      }
+    }
+    if (evt.type === "step_finish") {
+      const part = evt.part as Record<string, unknown> | undefined;
+      const result = part && typeof part.result === "string" ? (part.result as string) : null;
+      if (result && result.length > 0) {
+        messages.push(result);
+        continue;
+      }
+    }
     const contentKeys = ["content", "text", "message", "output"];
     for (const key of contentKeys) {
       const val = evt[key];
@@ -1038,7 +1093,9 @@ function extractVerdictFromOutput(result: PtyRunResult): string {
   const textMessages: string[] = [];
   for (const evt of result.events) {
     if (evt.type === "text") {
-      const val = evt.text || evt.content || evt.message;
+      const part = evt.part as Record<string, unknown> | undefined;
+      const partText = part && typeof part.text === "string" ? (part.text as string) : null;
+      const val = partText || evt.text || evt.content || evt.message;
       if (typeof val === "string" && val.length > 0) {
         textMessages.push(val);
       }
@@ -1050,6 +1107,22 @@ function extractVerdictFromOutput(result: PtyRunResult): string {
 
   const allMessages: string[] = [];
   for (const evt of result.events) {
+    if (evt.type === "text") {
+      const part = evt.part as Record<string, unknown> | undefined;
+      const partText = part && typeof part.text === "string" ? (part.text as string) : null;
+      if (partText && partText.length > 0) {
+        allMessages.push(partText);
+        continue;
+      }
+    }
+    if (evt.type === "step_finish") {
+      const part = evt.part as Record<string, unknown> | undefined;
+      const partResult = part && typeof part.result === "string" ? (part.result as string) : null;
+      if (partResult && partResult.length > 0) {
+        allMessages.push(partResult);
+        continue;
+      }
+    }
     const contentKeys = ["content", "text", "message", "output"];
     for (const key of contentKeys) {
       const val = evt[key];

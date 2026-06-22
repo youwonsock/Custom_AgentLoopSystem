@@ -34,7 +34,7 @@
     "maxIterations": 20,
     "phaseTimeoutMs": 600000,
     "idleTimeoutMs": 90000,
-    "ptyCols": 200,
+    "ptyCols": 100000,
     "ptyRows": 50,
     "profileFallbackModels": {
       "opencode": "opencode/big-pickle",
