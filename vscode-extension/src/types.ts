@@ -54,6 +54,9 @@ export interface LoopState {
   awaitingPlanApproval: boolean;
   planApproved: boolean;
   planPath: string | null;
+  interruptMessage?: string | null;
+  interruptBriefing?: string | null;
+  lastFailureDigest?: string | null;
 }
 
 export interface PlanChoice {
@@ -130,7 +133,16 @@ export type WebviewMessage =
   | { command: "selectPlanChoice"; sessionId: string; choiceId: number }
   | { command: "revisePlan"; sessionId: string; message: string }
   | { command: "approvePlan"; sessionId: string }
-  | { command: "requestPlanReviewState"; sessionId: string };
+  | { command: "requestPlanReviewState"; sessionId: string }
+  | { command: "selectSession"; sessionId: string };
+
+export interface PlanReviewSessionInfo {
+  sessionId: string;
+  status: LoopStatus;
+  goal: string;
+  phase: Phase | null;
+  awaitingPlanApproval: boolean;
+}
 
 export interface PlanReviewStatePayload {
   sessionId: string;
@@ -140,6 +152,8 @@ export interface PlanReviewStatePayload {
   planMd: string | null;
   isPaused: boolean;
   phase: Phase | null;
+  interruptBriefing: string | null;
+  sessions: PlanReviewSessionInfo[];
 }
 
 export interface WebviewStatePayload {

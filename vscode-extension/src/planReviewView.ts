@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as vscode from "vscode";
-import { PlanChoice, PlanReviewStatePayload, LoopState } from "./types";
+import { PlanChoice, PlanReviewStatePayload, PlanReviewSessionInfo, LoopState } from "./types";
 import { StateStore } from "./stateStore";
 import { LoopClient } from "./loopClient";
 
@@ -48,30 +48,67 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
   private async pushState(): Promise<void> {
     if (!this.view) return;
 
-    if (!this.selectedSessionId) {
-      const registry = await this.store.readRegistry();
-      if (registry.sessionMetas.length > 0) {
-        const running = registry.sessionMetas.find((m) => m.status === "RUNNING");
-        const paused = registry.sessionMetas.find((m) => m.status === "PAUSED");
-        this.selectedSessionId = running?.sessionId ?? paused?.sessionId ?? registry.sessionMetas[0].sessionId;
-      }
+    const registry = await this.store.readRegistry();
+    const sessionMetas = registry.sessionMetas;
+
+    const sessions: PlanReviewSessionInfo[] = [];
+    const stateCache = new Map<string, LoopState | null>();
+    for (const m of sessionMetas) {
+      let st: LoopState | null = null;
+      try {
+        const bundle = await this.store.readBundle(m.sessionId);
+        st = bundle.state;
+      } catch { /* ignore */ }
+      stateCache.set(m.sessionId, st);
+      sessions.push({
+        sessionId: m.sessionId,
+        status: m.status,
+        goal: m.goal,
+        phase: st?.phase ?? null,
+        awaitingPlanApproval: st?.awaitingPlanApproval ?? false,
+      });
     }
 
-    if (!this.selectedSessionId) {
-      this.postMessage({ command: "stateUpdate", payload: this.emptyPayload() });
+    const needsAttention = (sid: string): boolean => {
+      const st = stateCache.get(sid);
+      if (!st) return false;
+      return st.awaitingPlanApproval || st.phase === "INTERRUPT";
+    };
+
+    const isValid = (sid: string | null): boolean =>
+      !!sid && sessionMetas.some((m) => m.sessionId === sid);
+
+    if (sessions.length === 0) {
+      this.selectedSessionId = null;
+      this.postMessage({ command: "stateUpdate", payload: this.emptyPayload(sessions) });
       return;
     }
 
+    if (!isValid(this.selectedSessionId)) {
+      this.selectedSessionId = null;
+    }
+
+    const currentNeedsAttention = this.selectedSessionId && needsAttention(this.selectedSessionId);
+    if (!currentNeedsAttention) {
+      const attention = sessions.find((s) => needsAttention(s.sessionId));
+      if (attention) {
+        this.selectedSessionId = attention.sessionId;
+      } else if (!this.selectedSessionId) {
+        const paused = sessions.find((s) => s.status === "PAUSED");
+        const running = sessions.find((s) => s.status === "RUNNING");
+        this.selectedSessionId = paused?.sessionId ?? running?.sessionId ?? sessions[0].sessionId;
+      }
+    }
+
     const sessionId = this.selectedSessionId;
+    if (!sessionId) {
+      this.postMessage({ command: "stateUpdate", payload: this.emptyPayload(sessions) });
+      return;
+    }
+    const state = stateCache.get(sessionId) ?? null;
 
     let choices: PlanChoice[] | null = null;
     let planMd: string | null = null;
-    let state: LoopState | null = null;
-
-    try {
-      const bundle = await this.store.readBundle(sessionId);
-      state = bundle.state;
-    } catch { /* ignore */ }
 
     if (state) {
       if (state.awaitingPlanApproval) {
@@ -88,13 +125,15 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
       planMd,
       isPaused: state?.status === "PAUSED",
       phase: state?.phase ?? null,
+      interruptBriefing: state?.interruptBriefing ?? null,
+      sessions,
     };
 
     this.postMessage({ command: "stateUpdate", payload });
   }
 
-  private emptyPayload(): PlanReviewStatePayload {
-    return { sessionId: "", awaitingPlanApproval: false, planApproved: false, choices: null, planMd: null, isPaused: false, phase: null };
+  private emptyPayload(sessions: PlanReviewSessionInfo[] = []): PlanReviewStatePayload {
+    return { sessionId: "", awaitingPlanApproval: false, planApproved: false, choices: null, planMd: null, isPaused: false, phase: null, interruptBriefing: null, sessions };
   }
 
   private postMessage(msg: unknown): void {
@@ -111,6 +150,11 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
       case "requestPlanReviewState":
         await this.pushState();
         break;
+      case "selectSession": {
+        this.selectedSessionId = msg.sessionId ?? null;
+        await this.pushState();
+        break;
+      }
       case "selectPlanChoice": {
         const sessionId = msg.sessionId;
         if (!sessionId) return;
@@ -177,6 +221,24 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
         if (!sessionId) return;
         await this.client.resumeSession(sessionId);
         vscode.window.showInformationMessage(`Resumed session ${sessionId}`);
+        await this.pushState();
+        break;
+      }
+      case "interruptSession": {
+        const sessionId = msg.sessionId;
+        if (!sessionId || !msg.message) return;
+        const sessionDir = await this.store.getSessionDir(sessionId);
+        const cfg = await this.store.getPathsConfig();
+        const interruptPath = path.join(sessionDir, cfg.sessionFileNames.interruptMessage);
+        try {
+          await fs.promises.writeFile(interruptPath, msg.message, "utf8");
+          vscode.window.showInformationMessage(`Message sent to ${sessionId}. Resuming...`);
+          await this.client.resumeSession(sessionId);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(`Failed to send interrupt message: ${errMsg}`);
+        }
+        await this.pushState();
         break;
       }
     }
@@ -253,6 +315,32 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
     button.primary:hover { background: var(--vscode-button-hoverBackground); }
     button:disabled { opacity: 0.4; cursor: default; }
     .empty { color: var(--vscode-descriptionForeground); font-style: italic; padding: 12px 0; text-align: center; }
+    .session-bar { margin-bottom: 8px; }
+    .session-bar select {
+      width: 100%;
+      font-family: inherit;
+      font-size: 11px;
+      padding: 3px 6px;
+      border: 1px solid var(--vscode-input-border);
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border-radius: 3px;
+    }
+    .badge { display: inline-block; font-size: 9px; padding: 1px 5px; border-radius: 8px; margin-left: 4px; vertical-align: middle; }
+    .badge.attention { background: var(--vscode-statusBarItemErrorBackground, #c33); color: var(--vscode-statusBarItemErrorForeground, #fff); }
+    .badge.paused { background: var(--vscode-statusBarItemWarningBackground, #a80); color: var(--vscode-statusBarItemWarningForeground, #fff); }
+    .badge.running { background: var(--vscode-statusBarItemProminentBackground, #06c); color: var(--vscode-statusBarItemProminentForeground, #fff); }
+    .interrupt-briefing {
+      border: 1px solid var(--vscode-inputValidation-warningBorder, #a80);
+      border-radius: 4px;
+      padding: 8px;
+      margin-bottom: 8px;
+      max-height: 300px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      font-size: 11px;
+      background: var(--vscode-inputValidation-warningBackground, rgba(170,136,0,0.1));
+    }
     .spinner { display: inline-block; width: 10px; height: 10px; border: 2px solid var(--vscode-descriptionForeground); border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 4px; }
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
@@ -263,7 +351,7 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
   </div>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    let state = ${JSON.stringify({ sessionId: null, awaitingPlanApproval: false, planApproved: false, choices: null, planMd: null, isPaused: false, phase: null })};
+    let state = ${JSON.stringify({ sessionId: null, awaitingPlanApproval: false, planApproved: false, choices: null, planMd: null, isPaused: false, phase: null, interruptBriefing: null, sessions: [] })};
     let reviseBusy = false;
 
     window.addEventListener("message", (event) => {
@@ -279,41 +367,125 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
       return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
 
+    function sessionLabel(s) {
+      const id = s.sessionId.length > 12 ? s.sessionId.slice(0, 12) + "…" : s.sessionId;
+      let badge = "";
+      const attention = s.awaitingPlanApproval || s.phase === "INTERRUPT";
+      if (attention) badge = '<span class="badge attention">!</span>';
+      else if (s.status === "PAUSED") badge = '<span class="badge paused">II</span>';
+      else if (s.status === "RUNNING") badge = '<span class="badge running">▶</span>';
+      const goal = s.goal ? s.goal.slice(0, 40) : "";
+      return escapeHtml(id) + badge + " " + escapeHtml(goal);
+    }
+
+    function renderSessionSelector() {
+      const sessions = state.sessions || [];
+      if (sessions.length === 0) return "";
+      const opts = sessions.map(function(s) {
+        const sel = s.sessionId === state.sessionId ? " selected" : "";
+        return '<option value="' + escapeHtml(s.sessionId) + '"' + sel + '>' + sessionLabel(s) + '</option>';
+      }).join("");
+      return '<div class="session-bar"><select id="session-select">' + opts + '</select></div>';
+    }
+
     function render() {
       const root = document.getElementById("root");
+      const selector = renderSessionSelector();
+
       if (!state.sessionId) {
-        root.innerHTML = '<div class="empty">Select a session to review plans.</div>';
+        root.innerHTML = selector + '<div class="empty">Select a session to review plans.</div>';
+        bindSessionSelector();
         return;
       }
 
       const hasChoices = state.choices && state.choices.length > 0;
       const hasPlan = state.planMd && state.planMd.trim().length > 0;
+      const isInterrupt = state.phase === "INTERRUPT" && state.interruptBriefing;
 
-      if (state.awaitingPlanApproval && !hasPlan && hasChoices) {
-        renderChoosing(root);
+      let content;
+      if (isInterrupt) {
+        content = renderInterrupt();
+      } else if (state.awaitingPlanApproval && !hasPlan && hasChoices) {
+        content = renderChoosing();
       } else if (state.awaitingPlanApproval && hasPlan) {
-        renderReviewing(root);
+        content = renderReviewing();
       } else if (state.isPaused && hasPlan) {
-        renderPausedReview(root);
+        content = renderPausedReview();
       } else {
-        root.innerHTML = '<div class="empty">No plan review pending for this session.</div>';
+        content = '<div class="empty">No plan review pending for this session.</div>';
+      }
+
+      root.innerHTML = selector + content;
+      bindSessionSelector();
+
+      if (isInterrupt) {
+        bindInterrupt();
+      } else if (state.awaitingPlanApproval || (state.isPaused && hasPlan)) {
+        bindChat();
       }
     }
 
-    function renderChoosing(root) {
+    function bindSessionSelector() {
+      const sel = document.getElementById("session-select");
+      if (sel) {
+        sel.onchange = function() {
+          vscode.postMessage({ command: "selectSession", sessionId: sel.value });
+        };
+      }
+    }
+
+    function renderChoosing() {
       const choicesHtml = (state.choices || []).map(function(c) {
         return '<div class="choice-card" data-choice-id="' + c.id + '"><div class="choice-title">' + escapeHtml(c.title) + '</div><div class="choice-preview">' + escapeHtml(c.body.slice(0, 200)) + '</div></div>';
       }).join("");
-      root.innerHTML = '<h3>Plan Options</h3>' + choicesHtml;
+      return '<h3>Plan Options</h3>' + choicesHtml;
     }
 
     function selectChoice(choiceId) {
       vscode.postMessage({ command: "selectPlanChoice", sessionId: state.sessionId, choiceId: choiceId });
     }
 
-    function renderReviewing(root) {
-      root.innerHTML =
-        '<h3>Plan Review</h3>' +
+    function renderInterrupt() {
+      return '<h3>\u26a0 Interrupt \u2014 Action Required</h3>' +
+        '<div class="interrupt-briefing">' + escapeHtml(state.interruptBriefing || "") + '</div>' +
+        '<div class="chat-area"><textarea id="chat-input" placeholder="Send a message to the interrupter before resuming... (Ctrl+Enter to send)"></textarea>' +
+        '<div class="btn-row">' +
+          '<button id="btn-revise" ' + (reviseBusy ? 'disabled' : '') + '>' + (reviseBusy ? '<span class="spinner"></span> Sending...' : 'Send Message') + '</button>' +
+          '<button class="primary" id="btn-resume" ' + (reviseBusy ? 'disabled' : '') + '>Resume</button>' +
+        '</div></div>';
+    }
+
+    function bindInterrupt() {
+      const textarea = document.getElementById("chat-input");
+      const btnRevise = document.getElementById("btn-revise");
+      const btnResume = document.getElementById("btn-resume");
+
+      function sendMessage() {
+        if (!textarea || reviseBusy) return;
+        const msg = textarea.value.trim();
+        if (!msg) return;
+        reviseBusy = true;
+        render();
+        vscode.postMessage({ command: "interruptSession", sessionId: state.sessionId, message: msg });
+        textarea.value = "";
+      }
+
+      if (textarea) {
+        textarea.onkeydown = function(e) {
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            sendMessage();
+          }
+        };
+      }
+      if (btnRevise) btnRevise.onclick = sendMessage;
+      if (btnResume) btnResume.onclick = function() {
+        vscode.postMessage({ command: "resumeSession", sessionId: state.sessionId });
+      };
+    }
+
+    function renderReviewing() {
+      return '<h3>Plan Review</h3>' +
         '<div class="plan-preview">' + escapeHtml(state.planMd || "") + '</div>' +
         '<div class="chat-area"><textarea id="chat-input" placeholder="Request plan changes... (Ctrl+Enter to send)"></textarea>' +
         '<div class="btn-row">' +
@@ -321,19 +493,16 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
           '<button class="primary" id="btn-approve" ' + (reviseBusy ? 'disabled' : '') + '>Approve & Start</button>' +
           '<button id="btn-back-choices" ' + (reviseBusy ? 'disabled' : '') + '>Back to Choices</button>' +
         '</div></div>';
-      bindChat();
     }
 
-    function renderPausedReview(root) {
-      root.innerHTML =
-        '<h3>Session Paused \u2014 Plan Review</h3>' +
+    function renderPausedReview() {
+      return '<h3>Session Paused \u2014 Plan Review</h3>' +
         '<div class="plan-preview">' + escapeHtml(state.planMd || "") + '</div>' +
         '<div class="chat-area"><textarea id="chat-input" placeholder="Request plan changes... (Ctrl+Enter to send)"></textarea>' +
         '<div class="btn-row">' +
           '<button id="btn-revise" ' + (reviseBusy ? 'disabled' : '') + '>' + (reviseBusy ? '<span class="spinner"></span> Revising...' : 'Revise Plan') + '</button>' +
           '<button class="primary" id="btn-resume" ' + (reviseBusy ? 'disabled' : '') + '>Resume</button>' +
         '</div></div>';
-      bindChat();
     }
 
     function bindChat() {

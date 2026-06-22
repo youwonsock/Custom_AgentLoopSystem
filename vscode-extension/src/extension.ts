@@ -64,6 +64,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       panel.show();
       if (sessionId) {
         panel.selectSession(sessionId);
+        planReviewView?.selectSession(sessionId);
       }
     }),
 

@@ -119,6 +119,7 @@ interface LoopState {
   variantMapping: VariantMapping;
   lastFailureDigest: string | null;
   interruptMessage?: string;
+  interruptBriefing?: string | null;
 }
 
 interface PlanChoice {
@@ -1707,6 +1708,7 @@ class LoopOrchestrator {
     await this.archiveLoop(this.state.loopCount, Phase.INTERRUPT, "interrupter", result, startedAt, endedAt);
 
     const briefing = extractOutput(result);
+    this.state.interruptBriefing = briefing;
     console.warn("\n=== INTERRUPTER BRIEFING ===");
     console.warn(briefing);
     console.warn("============================");
@@ -1946,6 +1948,7 @@ function createDefaultLoopState(
     planApproved: false,
     planPath: null,
     lastFailureDigest: null,
+    interruptBriefing: null,
     createdAt: now,
     updatedAt: now,
     maxIterations,
@@ -2226,6 +2229,7 @@ async function cmdResume(parsed: Record<string, string>, rootDir: string): Promi
     }
     if (state.phase === Phase.INTERRUPT) {
       state.phase = Phase.IMPLEMENTATION;
+      state.interruptBriefing = null;
     }
   }
 
