@@ -124,6 +124,167 @@ interface SessionRegistry {
   modelVariants: Record<string, string[]> | null;
 }
 
+interface LoopPathsConfig {
+  sessionsRoot: string;
+  registryFileName: string;
+  variantsConfigFileName: string;
+  loopHistoryDirName: string;
+  sessionFileNames: {
+    state: string;
+    progressNotes: string;
+    finalSummary: string;
+    plan: string;
+    planChoices: string;
+    interruptMessage: string;
+    stopRequest: string;
+  };
+  roomFileNames: {
+    state: string;
+    skills: string;
+    input: string;
+    output: string;
+  };
+  roomDirNames: Record<AgentRole, string>;
+}
+
+interface LoopDefaultsConfig {
+  cliBinary: string;
+  maxIterations: number;
+  phaseTimeoutMs: number;
+  idleTimeoutMs: number;
+  ptyCols: number;
+  ptyRows: number;
+  profileFallbackModels: Record<string, string>;
+}
+
+interface LoopCliProfileConfig {
+  defaultBinary: string;
+  modelsArgs: string[];
+  interactionWhitelist: string[];
+  extraInteractionPatterns: string[];
+}
+
+interface LoopConfig {
+  paths: LoopPathsConfig;
+  defaults: LoopDefaultsConfig;
+  cliProfiles: Record<string, LoopCliProfileConfig>;
+  destructivePrompts: string[];
+  variantDefaults: Record<string, string[]>;
+}
+
+function getDefaultConfig(): LoopConfig {
+  return {
+    paths: {
+      sessionsRoot: ".goal/sessions",
+      registryFileName: "sessions_registry.json",
+      variantsConfigFileName: "model_variants.json",
+      loopHistoryDirName: "loop_history",
+      sessionFileNames: {
+        state: "loop_state.json",
+        progressNotes: "progress_notes.txt",
+        finalSummary: "final_summary.json",
+        plan: "plan.md",
+        planChoices: "plan_choices.json",
+        interruptMessage: "interrupt_message.txt",
+        stopRequest: "stop_request.txt",
+      },
+      roomFileNames: {
+        state: "state.json",
+        skills: "skills.json",
+        input: "input.json",
+        output: "output.json",
+      },
+      roomDirNames: {
+        planner: "0_planner",
+        implementer: "1_implementer",
+        tester: "2_tester",
+        qa_lead: "3_qa_lead",
+        master: "4_master",
+        interrupter: "5_interrupter",
+      },
+    },
+    defaults: {
+      cliBinary: "opencode",
+      maxIterations: 20,
+      phaseTimeoutMs: 10 * 60 * 1000,
+      idleTimeoutMs: 90 * 1000,
+      ptyCols: 200,
+      ptyRows: 50,
+      profileFallbackModels: {
+        opencode: "opencode/big-pickle",
+        kilo: "anthropic/claude-sonnet-4-5",
+        _default: "anthropic/claude-sonnet-4-5",
+      },
+    },
+    cliProfiles: {},
+    destructivePrompts: [
+      "Delete", "Remove all", "Destroy", "Force overwrite",
+      "git clean", "git checkout --", "git reset --hard",
+      "Drop table", "Drop database",
+    ],
+    variantDefaults: {
+      anthropic: ["high", "max"],
+      openai: ["none", "minimal", "low", "medium", "high", "xhigh"],
+      google: ["low", "high"],
+      gemini: ["low", "high"],
+      opencode: ["none", "minimal", "low", "medium", "high", "xhigh"],
+      "opencode-go": ["none", "minimal", "low", "medium", "high", "xhigh"],
+      kilo: ["none", "minimal", "low", "medium", "high", "xhigh"],
+      deepseek: ["low", "medium", "high", "max"],
+    },
+  };
+}
+
+function mergeConfig(defaults: LoopConfig, overrides: Partial<LoopConfig>): LoopConfig {
+  return {
+    paths: { ...defaults.paths, ...overrides.paths } as LoopPathsConfig,
+    defaults: { ...defaults.defaults, ...overrides.defaults } as LoopDefaultsConfig,
+    cliProfiles: { ...defaults.cliProfiles, ...overrides.cliProfiles },
+    destructivePrompts: overrides.destructivePrompts ?? defaults.destructivePrompts,
+    variantDefaults: { ...defaults.variantDefaults, ...overrides.variantDefaults },
+  };
+}
+
+async function loadLoopConfig(rootDir: string): Promise<LoopConfig> {
+  const cfgPath = path.join(rootDir, "loop_config.json");
+  const defaults = getDefaultConfig();
+  try {
+    const raw = await fse.readFile(cfgPath, "utf-8");
+    const overrides = JSON.parse(raw) as Partial<LoopConfig>;
+    return mergeConfig(defaults, overrides);
+  } catch {
+    return defaults;
+  }
+}
+
+function cliProfileFromConfig(config: LoopConfig, profileName: string, binaryLower: string): CliProfile {
+  const profileCfg = config.cliProfiles[profileName] || config.cliProfiles[binaryLower];
+  if (profileCfg) {
+    return {
+      name: profileName || binaryLower,
+      defaultBinary: profileCfg.defaultBinary,
+      modelsArgs: profileCfg.modelsArgs,
+      buildRunArgs: (opts) => {
+        const args = [
+          "run", "--format", "json",
+          "--model", opts.model,
+          "--dir", opts.targetProjectPath,
+        ];
+        if (profileName === "kilo") {
+          args.push("--auto", "--pure");
+        } else {
+          args.push("--dangerously-skip-permissions");
+        }
+        if (opts.variant) args.push("--variant", opts.variant);
+        args.push(opts.prompt);
+        return args;
+      },
+      interactionWhitelist: profileCfg.interactionWhitelist,
+    };
+  }
+  return profileName === "kilo" ? KILO_PROFILE : OPENCODE_PROFILE;
+}
+
 interface HandoffPayload {
   sessionId: string;
   refinedGoal: string;
@@ -288,28 +449,17 @@ const CLI_PROFILES: Record<string, CliProfile> = {
   kilo: KILO_PROFILE,
 };
 
-const DEFAULT_PROVIDER_VARIANTS: Record<string, string[]> = {
-  anthropic: ["high", "max"],
-  openai: ["none", "minimal", "low", "medium", "high", "xhigh"],
-  google: ["low", "high"],
-  gemini: ["low", "high"],
-  opencode: ["none", "minimal", "low", "medium", "high", "xhigh"],
-  "opencode-go": ["none", "minimal", "low", "medium", "high", "xhigh"],
-  kilo: ["none", "minimal", "low", "medium", "high", "xhigh"],
-  deepseek: ["low", "medium", "high", "max"],
-};
-
 function resolveCliProfile(profileName: string | null, binaryName: string): CliProfile {
   const lower = binaryName.toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, "");
   if (profileName && CLI_PROFILES[profileName]) {
-    const profile = CLI_PROFILES[profileName];
-    if (lower !== profile.defaultBinary && lower !== profile.name && CLI_PROFILES[lower]) {
-      return CLI_PROFILES[lower];
+    const builtin = CLI_PROFILES[profileName];
+    if (lower !== builtin.defaultBinary && lower !== builtin.name && CLI_PROFILES[lower]) {
+      return cliProfileFromConfig(loopConfig, profileName, lower);
     }
-    return profile;
+    return cliProfileFromConfig(loopConfig, profileName, lower);
   }
   if (CLI_PROFILES[lower]) {
-    return CLI_PROFILES[lower];
+    return cliProfileFromConfig(loopConfig, profileName ?? lower, lower);
   }
   return OPENCODE_PROFILE;
 }
@@ -320,11 +470,11 @@ function getModelVariants(modelId: string, registry?: SessionRegistry): string[]
   if (registry?.modelVariants?.[modelId]) {
     return registry.modelVariants[modelId];
   }
-  return DEFAULT_PROVIDER_VARIANTS[provider] ?? [];
+  return loopConfig.variantDefaults[provider] ?? [];
 }
 
 async function loadModelVariantsConfig(rootDir: string): Promise<Record<string, string[]> | null> {
-  const cfgPath = path.join(rootDir, "model_variants.json");
+  const cfgPath = path.join(rootDir, loopConfig.paths.variantsConfigFileName);
   try {
     const raw = await fse.readFile(cfgPath, "utf-8");
     return JSON.parse(raw);
@@ -332,6 +482,8 @@ async function loadModelVariantsConfig(rootDir: string): Promise<Record<string, 
     return null;
   }
 }
+
+let loopConfig: LoopConfig = getDefaultConfig();
 
 const DEFAULT_MAX_ITERATIONS = 20;
 const DEFAULT_PHASE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -596,8 +748,8 @@ function spawnCliPty(opts: SpawnCliOptions): SpawnHandle {
 
   const ptyProc = pty.spawn(resolvedBinary, args, {
     name: "xterm-256color",
-    cols: 200,
-    rows: 50,
+    cols: loopConfig.defaults.ptyCols,
+    rows: loopConfig.defaults.ptyRows,
     cwd: opts.targetProjectPath,
     env,
     useConpty,
@@ -666,7 +818,7 @@ function spawnCliPty(opts: SpawnCliOptions): SpawnHandle {
         }
 
         const lower = trimmed.toLowerCase();
-        const isDestructive = DESTRUCTIVE_PROMPTS.some((p) => lower.includes(p.toLowerCase()));
+        const isDestructive = loopConfig.destructivePrompts.some((p) => lower.includes(p.toLowerCase()));
         const matchedWhitelist = opts.cliProfile.interactionWhitelist.find((p) => lower.includes(p.toLowerCase()));
 
         if (matchedWhitelist && !isDestructive) {
@@ -967,20 +1119,21 @@ async function initGoalTree(
   rootDir: string,
   sessionId: string
 ): Promise<{ sessionDir: string; rooms: Record<AgentRole, AgentRoom> }> {
-  const sessionsRoot = path.join(rootDir, ".goal", "sessions");
+  const cfg = loopConfig.paths;
+  const sessionsRoot = path.join(rootDir, cfg.sessionsRoot);
   const sessionDir = path.join(sessionsRoot, sessionId);
 
   const rooms: Partial<Record<AgentRole, AgentRoom>> = {};
 
-  for (const role of Object.keys(ROOM_DIR_NAMES) as AgentRole[]) {
-    const roomDir = path.join(sessionDir, ROOM_DIR_NAMES[role]);
+  for (const role of Object.keys(cfg.roomDirNames) as AgentRole[]) {
+    const roomDir = path.join(sessionDir, cfg.roomDirNames[role]);
     await fse.ensureDir(roomDir);
     rooms[role] = {
       role,
-      statePath: path.join(roomDir, "state.json"),
-      skillsPath: path.join(roomDir, "skills.json"),
-      inputPayloadPath: path.join(roomDir, "input.json"),
-      outputPayloadPath: path.join(roomDir, "output.json"),
+      statePath: path.join(roomDir, cfg.roomFileNames.state),
+      skillsPath: path.join(roomDir, cfg.roomFileNames.skills),
+      inputPayloadPath: path.join(roomDir, cfg.roomFileNames.input),
+      outputPayloadPath: path.join(roomDir, cfg.roomFileNames.output),
     };
     await atomicWriteJson(rooms[role]!.skillsPath, DEFAULT_SKILLS[role]);
     await atomicWriteJson(rooms[role]!.statePath, { status: "idle", lastExitCode: null, lastRunAt: null });
@@ -988,9 +1141,9 @@ async function initGoalTree(
     await atomicWriteJson(rooms[role]!.outputPayloadPath, {});
   }
 
-  await fse.ensureDir(path.join(sessionDir, "loop_history"));
+  await fse.ensureDir(path.join(sessionDir, cfg.loopHistoryDirName));
 
-  const notesPath = path.join(sessionDir, "progress_notes.txt");
+  const notesPath = path.join(sessionDir, cfg.sessionFileNames.progressNotes);
   if (!await fse.pathExists(notesPath)) {
     await fse.writeFile(notesPath, "", "utf8");
   }
@@ -1118,19 +1271,20 @@ class LoopOrchestrator {
     state: LoopState,
     rooms: Record<AgentRole, AgentRoom>
   ) {
+    const cfg = loopConfig.paths;
     this.rootDir = rootDir;
     this.registry = registry;
     this.state = state;
     this.rooms = rooms;
-    this.registryPath = path.join(rootDir, "sessions_registry.json");
-    this.sessionDir = path.join(rootDir, ".goal", "sessions", state.sessionId);
+    this.registryPath = path.join(rootDir, cfg.registryFileName);
+    this.sessionDir = path.join(rootDir, cfg.sessionsRoot, state.sessionId);
   }
 
   async run(): Promise<void> {
     this.registerSignalHandlers();
 
     while (!this.disposed && this.state.status === LoopStatus.RUNNING) {
-      const interruptPath = path.join(this.sessionDir, "interrupt_message.txt");
+      const interruptPath = path.join(this.sessionDir, loopConfig.paths.sessionFileNames.interruptMessage);
       try {
         const msg = await fse.readFile(interruptPath, "utf8");
         if (msg.trim().length > 0) {
@@ -1147,7 +1301,7 @@ class LoopOrchestrator {
         // file doesn't exist — no interrupt pending
       }
 
-      const stopPath = path.join(this.sessionDir, "stop_request.txt");
+      const stopPath = path.join(this.sessionDir, loopConfig.paths.sessionFileNames.stopRequest);
       try {
         const s = await fse.readFile(stopPath, "utf8");
         if (s.trim().length > 0) {
@@ -1260,8 +1414,8 @@ class LoopOrchestrator {
     const output = extractOutput(result);
     const choices = parsePlanChoices(output);
 
-    const planPath = path.join(this.sessionDir, "plan.md");
-    const choicesPath = path.join(this.sessionDir, "plan_choices.json");
+    const planPath = path.join(this.sessionDir, loopConfig.paths.sessionFileNames.plan);
+    const choicesPath = path.join(this.sessionDir, loopConfig.paths.sessionFileNames.planChoices);
     await atomicWriteJson(choicesPath, choices);
 
     this.state.planPath = planPath;
@@ -1565,17 +1719,17 @@ class LoopOrchestrator {
       interruptMessage: this.state.interruptMessage ?? null,
     };
     const fileName = `loop_${loopNum}_${phase.toLowerCase()}_${role}.json`;
-    const filePath = path.join(this.sessionDir, "loop_history", fileName);
+    const filePath = path.join(this.sessionDir, loopConfig.paths.loopHistoryDirName, fileName);
     await atomicWriteJson(filePath, entry);
   }
 
   private async appendProgressNote(note: string): Promise<void> {
-    const notesPath = path.join(this.sessionDir, "progress_notes.txt");
+    const notesPath = path.join(this.sessionDir, loopConfig.paths.sessionFileNames.progressNotes);
     await atomicAppendLine(notesPath, note);
   }
 
   private async readProgressNotes(): Promise<string> {
-    const notesPath = path.join(this.sessionDir, "progress_notes.txt");
+    const notesPath = path.join(this.sessionDir, loopConfig.paths.sessionFileNames.progressNotes);
     try {
       return await fse.readFile(notesPath, "utf8");
     } catch {
@@ -1594,13 +1748,13 @@ class LoopOrchestrator {
       progressNotes: notes,
       approvedByMaster: this.state.masterApproved,
     };
-    const summaryPath = path.join(this.sessionDir, "final_summary.json");
+    const summaryPath = path.join(this.sessionDir, loopConfig.paths.sessionFileNames.finalSummary);
     await atomicWriteJson(summaryPath, summary);
   }
 
   private async saveState(): Promise<void> {
     this.state.updatedAt = new Date().toISOString();
-    const statePath = path.join(this.sessionDir, "loop_state.json");
+    const statePath = path.join(this.sessionDir, loopConfig.paths.sessionFileNames.state);
     await atomicWriteJson(statePath, this.state);
 
     const roomStatePath = this.rooms[this.currentRole()]?.statePath;
@@ -1770,15 +1924,16 @@ function resolveVariantMapping(parsed: Record<string, string>): VariantMapping {
 async function resolveRootDir(parsed: Record<string, string>): Promise<string> {
   if (parsed.root) return path.resolve(parsed.root);
   const scriptDir = path.dirname(process.argv[1]);
-  if (await fse.pathExists(path.join(scriptDir, "sessions_registry.json"))) {
+  if (await fse.pathExists(path.join(scriptDir, loopConfig.paths.registryFileName))) {
     return scriptDir;
   }
   return process.cwd();
 }
 
 async function cmdInit(rootDir: string): Promise<void> {
-  await fse.ensureDir(path.join(rootDir, ".goal", "sessions"));
-  const registryPath = path.join(rootDir, "sessions_registry.json");
+  const cfg = loopConfig.paths;
+  await fse.ensureDir(path.join(rootDir, cfg.sessionsRoot));
+  const registryPath = path.join(rootDir, cfg.registryFileName);
   const existing = await atomicReadJson<SessionRegistry>(registryPath);
   if (existing) {
     console.log(`Already initialized at ${rootDir}`);
@@ -1797,13 +1952,13 @@ async function cmdInit(rootDir: string): Promise<void> {
   await atomicWriteJson(registryPath, registry);
   console.log(`Initialized agent-loop system at ${rootDir}`);
   console.log(`Registry: ${registryPath}`);
-  console.log(`Sessions dir: ${path.join(rootDir, ".goal", "sessions")}`);
+  console.log(`Sessions dir: ${path.join(rootDir, loopConfig.paths.sessionsRoot)}`);
 }
 
 async function cmdModels(parsed: Record<string, string>, rootDir: string): Promise<void> {
-  const cliBinary = parsed.binary || "opencode";
+  const cliBinary = parsed.binary || loopConfig.defaults.cliBinary;
   const profile = resolveCliProfile(parsed.profile ?? null, cliBinary);
-  const registryPath = path.join(rootDir, "sessions_registry.json");
+  const registryPath = path.join(rootDir, loopConfig.paths.registryFileName);
   const registry = await atomicReadJson<SessionRegistry>(registryPath);
   const override = registry?.manualModelsOverride ?? null;
   const models = await discoverCliModels(cliBinary, override, profile);
@@ -1837,13 +1992,13 @@ async function cmdRun(parsed: Record<string, string>, rootDir: string): Promise<
   }
 
   const targetProjectPath = parsed.target && parsed.target !== "true" ? parsed.target : process.cwd();
-  const cliBinary = parsed.binary && parsed.binary !== "true" ? parsed.binary : "opencode";
+  const cliBinary = parsed.binary && parsed.binary !== "true" ? parsed.binary : loopConfig.defaults.cliBinary;
   const profile = resolveCliProfile(parsed.profile ?? null, cliBinary);
-  const maxIterations = parseIntSafe(parsed["max-iterations"], DEFAULT_MAX_ITERATIONS);
-  const phaseTimeoutMs = parseIntSafe(parsed["phase-timeout"], DEFAULT_PHASE_TIMEOUT_MS);
-  const idleTimeoutMs = parseIntSafe(parsed["idle-timeout"], DEFAULT_IDLE_TIMEOUT_MS);
+  const maxIterations = parseIntSafe(parsed["max-iterations"], loopConfig.defaults.maxIterations);
+  const phaseTimeoutMs = parseIntSafe(parsed["phase-timeout"], loopConfig.defaults.phaseTimeoutMs);
+  const idleTimeoutMs = parseIntSafe(parsed["idle-timeout"], loopConfig.defaults.idleTimeoutMs);
 
-  const registryPath = path.join(rootDir, "sessions_registry.json");
+  const registryPath = path.join(rootDir, loopConfig.paths.registryFileName);
   let registry = await atomicReadJson<SessionRegistry>(registryPath);
   if (!registry) {
     await cmdInit(rootDir);
@@ -1878,11 +2033,8 @@ async function cmdRun(parsed: Record<string, string>, rootDir: string): Promise<
     console.log(`[orchestrator] Discovered ${models.length} models.`);
   }
 
-  const PROFILE_FALLBACKS: Record<string, string> = {
-    opencode: "opencode/big-pickle",
-    kilo: "anthropic/claude-sonnet-4-5",
-  };
-  const profileFallback = PROFILE_FALLBACKS[profile.name] ?? "anthropic/claude-sonnet-4-5";
+  const fallbackModels = loopConfig.defaults.profileFallbackModels;
+  const profileFallback = fallbackModels[profile.name] ?? fallbackModels["_default"] ?? "anthropic/claude-sonnet-4-5";
   const fallbackModel = models.length > 0 ? models[0] : profileFallback;
   const modelMapping = resolveModelMapping(parsed, models, fallbackModel);
   const variantMapping = resolveVariantMapping(parsed);
@@ -1916,7 +2068,7 @@ async function cmdRun(parsed: Record<string, string>, rootDir: string): Promise<
     idleTimeoutMs
   );
 
-  const statePath = path.join(sessionDir, "loop_state.json");
+  const statePath = path.join(sessionDir, loopConfig.paths.sessionFileNames.state);
   await atomicWriteJson(statePath, state);
 
   reg.sessionMetas.push({
@@ -1935,7 +2087,7 @@ async function cmdRun(parsed: Record<string, string>, rootDir: string): Promise<
   if (finalState) {
     console.log(`\n[orchestrator] Session ${sessionId} ended with status: ${finalState.status}`);
     if (finalState.status === LoopStatus.SUCCESS) {
-      const summaryPath = path.join(sessionDir, "final_summary.json");
+      const summaryPath = path.join(sessionDir, loopConfig.paths.sessionFileNames.finalSummary);
       console.log(`[orchestrator] Final summary: ${summaryPath}`);
     } else if (finalState.status === LoopStatus.PAUSED) {
       console.log(`[orchestrator] Session paused. Resume with: agent-loop resume --session ${sessionId} --root ${rootDir}`);
@@ -1951,15 +2103,15 @@ async function cmdResume(parsed: Record<string, string>, rootDir: string): Promi
     process.exit(1);
   }
 
-  const registryPath = path.join(rootDir, "sessions_registry.json");
+  const registryPath = path.join(rootDir, loopConfig.paths.registryFileName);
   const registry = await atomicReadJson<SessionRegistry>(registryPath);
   if (!registry) {
     console.error(`Error: No registry found at ${registryPath}. Run 'agent-loop init' first.`);
     process.exit(1);
   }
 
-  const sessionDir = path.join(rootDir, ".goal", "sessions", sessionId);
-  const statePath = path.join(sessionDir, "loop_state.json");
+  const sessionDir = path.join(rootDir, loopConfig.paths.sessionsRoot, sessionId);
+  const statePath = path.join(sessionDir, loopConfig.paths.sessionFileNames.state);
   const state = await atomicReadJson<LoopState>(statePath);
   if (!state) {
     console.error(`Error: No session found with ID ${sessionId}`);
@@ -1987,7 +2139,7 @@ async function cmdResume(parsed: Record<string, string>, rootDir: string): Promi
     state.status = LoopStatus.RUNNING;
     if (state.awaitingPlanApproval && state.planApproved) {
       try {
-        const plan = await fse.readFile(path.join(sessionDir, "plan.md"), "utf8");
+        const plan = await fse.readFile(path.join(sessionDir, loopConfig.paths.sessionFileNames.plan), "utf8");
         if (plan.trim().length > 0) state.refinedGoal = plan.trim();
       } catch { /* plan.md not yet written */ }
       state.planningComplete = true;
@@ -2005,14 +2157,14 @@ async function cmdResume(parsed: Record<string, string>, rootDir: string): Promi
   }
 
   const rooms: Partial<Record<AgentRole, AgentRoom>> = {};
-  for (const role of Object.keys(ROOM_DIR_NAMES) as AgentRole[]) {
-    const roomDir = path.join(sessionDir, ROOM_DIR_NAMES[role]);
+  for (const role of Object.keys(loopConfig.paths.roomDirNames) as AgentRole[]) {
+    const roomDir = path.join(sessionDir, loopConfig.paths.roomDirNames[role]);
     rooms[role] = {
       role,
-      statePath: path.join(roomDir, "state.json"),
-      skillsPath: path.join(roomDir, "skills.json"),
-      inputPayloadPath: path.join(roomDir, "input.json"),
-      outputPayloadPath: path.join(roomDir, "output.json"),
+      statePath: path.join(roomDir, loopConfig.paths.roomFileNames.state),
+      skillsPath: path.join(roomDir, loopConfig.paths.roomFileNames.skills),
+      inputPayloadPath: path.join(roomDir, loopConfig.paths.roomFileNames.input),
+      outputPayloadPath: path.join(roomDir, loopConfig.paths.roomFileNames.output),
     };
   }
 
@@ -2039,22 +2191,22 @@ async function cmdRevisePlan(parsed: Record<string, string>, rootDir: string): P
     process.exit(1);
   }
 
-  const registryPath = path.join(rootDir, "sessions_registry.json");
+  const registryPath = path.join(rootDir, loopConfig.paths.registryFileName);
   const registry = await atomicReadJson<SessionRegistry>(registryPath);
   if (!registry) {
     console.error(`Error: No registry found at ${registryPath}.`);
     process.exit(1);
   }
 
-  const sessionDir = path.join(rootDir, ".goal", "sessions", sessionId);
-  const statePath = path.join(sessionDir, "loop_state.json");
+  const sessionDir = path.join(rootDir, loopConfig.paths.sessionsRoot, sessionId);
+  const statePath = path.join(sessionDir, loopConfig.paths.sessionFileNames.state);
   const state = await atomicReadJson<LoopState>(statePath);
   if (!state) {
     console.error(`Error: No session found with ID ${sessionId}`);
     process.exit(1);
   }
 
-  const planPath = state.planPath || path.join(sessionDir, "plan.md");
+  const planPath = state.planPath || path.join(sessionDir, loopConfig.paths.sessionFileNames.plan);
   let currentPlan = "";
   try { currentPlan = await fse.readFile(planPath, "utf8"); } catch { /* empty */ }
 
@@ -2121,6 +2273,7 @@ async function main(): Promise<void> {
 
   const parsed = parseArgs(args.slice(1));
   const rootDir = await resolveRootDir(parsed);
+  loopConfig = await loadLoopConfig(rootDir);
 
   switch (command) {
     case "init":

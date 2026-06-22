@@ -12,6 +12,8 @@
     defaultTargetPath: "",
     cliProfile: "opencode",
     modelVariants: null,
+    variantDefaults: {},
+    cliProfiles: {},
     variantMapping: {},
   };
 
@@ -82,6 +84,8 @@
       cliProfile: state.cliProfile,
       variantMapping: state.variantMapping,
       modelVariants: state.modelVariants,
+      variantDefaults: state.variantDefaults,
+      cliProfiles: state.cliProfiles,
       modelSelections,
       variantSelections,
     });
@@ -142,6 +146,8 @@
     if (regOverrides) return regOverrides;
     const slashIdx = modelId.indexOf("/");
     const provider = slashIdx > 0 ? modelId.slice(0, slashIdx).toLowerCase() : "";
+    var configDefaults = (state.variantDefaults && state.variantDefaults[provider]) || [];
+    if (configDefaults.length > 0) return configDefaults;
     const defaults = {
       anthropic: ["high", "max"],
       openai: ["none", "minimal", "low", "medium", "high", "xhigh"],

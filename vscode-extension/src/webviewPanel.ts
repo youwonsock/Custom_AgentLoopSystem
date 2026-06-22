@@ -12,6 +12,8 @@ import {
   VariantMapping,
   ExtensionConfig,
   readExtensionConfig,
+  loadLoopVariantDefaults,
+  loadCliProfilesConfig,
 } from "./types";
 import { StateStore } from "./stateStore";
 import { LoopClient, LogEntry } from "./loopClient";
@@ -112,7 +114,8 @@ export class LoopWebviewPanel {
       case "stopSession":
         {
           const sessionDir = await this.store.getSessionDir(msg.sessionId);
-          const stopPath = path.join(sessionDir, "stop_request.txt");
+          const cfg = await this.store.getPathsConfig();
+          const stopPath = path.join(sessionDir, cfg.sessionFileNames.stopRequest);
           await fs.promises.writeFile(stopPath, "stop", "utf8");
           vscode.window.showInformationMessage(`Agent Loop: Stop requested for ${msg.sessionId}. Session will pause after current work completes.`);
         }
@@ -179,15 +182,16 @@ export class LoopWebviewPanel {
       }
       case "interruptSession": {
         const sessionDir = await this.store.getSessionDir(msg.sessionId);
-        const interruptPath = path.join(sessionDir, "interrupt_message.txt");
+        const cfg = await this.store.getPathsConfig();
+        const interruptPath = path.join(sessionDir, cfg.sessionFileNames.interruptMessage);
         await fs.promises.writeFile(interruptPath, msg.message, "utf8");
-        const statePath = path.join(sessionDir, "loop_state.json");
+        const statePath = path.join(sessionDir, cfg.sessionFileNames.state);
         let planPath: string | null = null;
         let fallbackContent: string | null = null;
         try {
           const stateRaw = await fs.promises.readFile(statePath, "utf8");
           const loopState: LoopState = JSON.parse(stateRaw);
-          planPath = loopState.planPath || path.join(sessionDir, "plan.md");
+          planPath = loopState.planPath || path.join(sessionDir, cfg.sessionFileNames.plan);
           fallbackContent = loopState.refinedGoal || loopState.goal || "";
         } catch {
           // state file may not exist yet
@@ -429,6 +433,9 @@ export class LoopWebviewPanel {
 
     const defaultTargetPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
     const liveCfg = readExtensionConfig();
+    const rootDir = await this.store.getRootDir();
+    const variantDefaults = await loadLoopVariantDefaults(rootDir);
+    const cliProfiles = await loadCliProfilesConfig(rootDir);
 
     const payload: WebviewStatePayload = {
       registry,
@@ -443,6 +450,8 @@ export class LoopWebviewPanel {
       modelsDiscoveredCli: registry.modelsDiscoveredCli ?? null,
       modelVariants: registry.modelVariants ?? null,
       variantMapping: state?.variantMapping ?? {},
+      variantDefaults,
+      cliProfiles,
     };
 
     this.postMessage({ command: "stateUpdate", payload });
@@ -451,7 +460,8 @@ export class LoopWebviewPanel {
   private async openProgressNotes(sessionId: string): Promise<void> {
     try {
       const sessionDir = await this.store.getSessionDir(sessionId);
-      const notesPath = path.join(sessionDir, "progress_notes.txt");
+      const cfg = await this.store.getPathsConfig();
+      const notesPath = path.join(sessionDir, cfg.sessionFileNames.progressNotes);
       const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(notesPath));
       await vscode.window.showTextDocument(doc, { preview: true });
     } catch (err) {
@@ -463,7 +473,8 @@ export class LoopWebviewPanel {
   private async openFinalSummary(sessionId: string): Promise<void> {
     try {
       const sessionDir = await this.store.getSessionDir(sessionId);
-      const summaryPath = path.join(sessionDir, "final_summary.json");
+      const cfg = await this.store.getPathsConfig();
+      const summaryPath = path.join(sessionDir, cfg.sessionFileNames.finalSummary);
       const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(summaryPath));
       await vscode.window.showTextDocument(doc, { preview: true });
     } catch (err) {

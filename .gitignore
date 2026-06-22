@@ -31,6 +31,7 @@ npm-debug.log*
 Thumbs.db
 *.tmp
 *.bak
+.vscode/settings.json
 
 # Test artifacts
 test/tmp/

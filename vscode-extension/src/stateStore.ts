@@ -10,6 +10,8 @@ import {
   LoopHistoryEntry,
   FinalSummary,
   readExtensionConfig,
+  loadLoopPathsConfig,
+  LoopPathsConfig,
 } from "./types";
 
 let globalContext: vscode.ExtensionContext | undefined;
@@ -19,8 +21,16 @@ export class StateStore {
   private stateCache: Map<string, LoopState> = new Map();
   private pollTimer: NodeJS.Timeout | null = null;
   private listeners: Array<() => void> = [];
+  private pathsCache: LoopPathsConfig | null = null;
 
   constructor(private readonly config: ExtensionConfig) {}
+
+  async getPathsConfig(): Promise<LoopPathsConfig> {
+    if (this.pathsCache) return this.pathsCache;
+    const root = await this.getRootDir();
+    this.pathsCache = await loadLoopPathsConfig(root);
+    return this.pathsCache;
+  }
 
   async getRootDir(): Promise<string> {
     const liveRootDir = readExtensionConfig().rootDir;
@@ -92,22 +102,26 @@ export class StateStore {
 
   getRegistryPath = async (): Promise<string> => {
     const root = await this.getRootDir();
-    return path.join(root, "sessions_registry.json");
+    const cfg = await this.getPathsConfig();
+    return path.join(root, cfg.registryFileName);
   };
 
   getSessionDir = async (sessionId: string): Promise<string> => {
     const root = await this.getRootDir();
-    return path.join(root, ".goal", "sessions", sessionId);
+    const cfg = await this.getPathsConfig();
+    return path.join(root, cfg.sessionsRoot, sessionId);
   };
 
   getPlanChoicesPath = async (sessionId: string): Promise<string> => {
     const dir = await this.getSessionDir(sessionId);
-    return path.join(dir, "plan_choices.json");
+    const cfg = await this.getPathsConfig();
+    return path.join(dir, cfg.sessionFileNames.planChoices);
   };
 
   getPlanMdPath = async (sessionId: string): Promise<string> => {
     const dir = await this.getSessionDir(sessionId);
-    return path.join(dir, "plan.md");
+    const cfg = await this.getPathsConfig();
+    return path.join(dir, cfg.sessionFileNames.plan);
   };
 
   async readPlanChoices(sessionId: string): Promise<any[] | null> {
@@ -135,7 +149,8 @@ export class StateStore {
       await fs.access(registryPath);
     } catch {
       const root = await this.getRootDir();
-      await fs.mkdir(path.join(root, ".goal", "sessions"), { recursive: true });
+      const cfg = await this.getPathsConfig();
+      await fs.mkdir(path.join(root, cfg.sessionsRoot), { recursive: true });
       const empty: SessionRegistry = {
         version: 1,
         activeSessionIds: [],
@@ -237,7 +252,8 @@ export class StateStore {
 
   async readState(sessionId: string): Promise<LoopState | null> {
     const cached = this.stateCache.get(sessionId);
-    const statePath = path.join(await this.getSessionDir(sessionId), "loop_state.json");
+    const cfg = await this.getPathsConfig();
+    const statePath = path.join(await this.getSessionDir(sessionId), cfg.sessionFileNames.state);
     const data = await this.readJsonAtomic<LoopState>(statePath);
     if (data) {
       this.stateCache.set(sessionId, data);
@@ -247,7 +263,8 @@ export class StateStore {
   }
 
   async readProgressNotes(sessionId: string): Promise<string> {
-    const notesPath = path.join(await this.getSessionDir(sessionId), "progress_notes.txt");
+    const cfg = await this.getPathsConfig();
+    const notesPath = path.join(await this.getSessionDir(sessionId), cfg.sessionFileNames.progressNotes);
     try {
       return await fs.readFile(notesPath, "utf8");
     } catch {
@@ -256,7 +273,8 @@ export class StateStore {
   }
 
   async readHistory(sessionId: string): Promise<LoopHistoryEntry[]> {
-    const historyDir = path.join(await this.getSessionDir(sessionId), "loop_history");
+    const cfg = await this.getPathsConfig();
+    const historyDir = path.join(await this.getSessionDir(sessionId), cfg.loopHistoryDirName);
     try {
       const files = await fs.readdir(historyDir);
       const entries: LoopHistoryEntry[] = [];
@@ -277,7 +295,8 @@ export class StateStore {
   }
 
   async readFinalSummary(sessionId: string): Promise<FinalSummary | null> {
-    const summaryPath = path.join(await this.getSessionDir(sessionId), "final_summary.json");
+    const cfg = await this.getPathsConfig();
+    const summaryPath = path.join(await this.getSessionDir(sessionId), cfg.sessionFileNames.finalSummary);
     return this.readJsonAtomic<FinalSummary>(summaryPath);
   }
 

@@ -1,0 +1,113 @@
+{
+  "$schema": "loop_config.schema.json",
+  "paths": {
+    "sessionsRoot": ".goal/sessions",
+    "registryFileName": "sessions_registry.json",
+    "variantsConfigFileName": "model_variants.json",
+    "loopHistoryDirName": "loop_history",
+    "sessionFileNames": {
+      "state": "loop_state.json",
+      "progressNotes": "progress_notes.txt",
+      "finalSummary": "final_summary.json",
+      "plan": "plan.md",
+      "planChoices": "plan_choices.json",
+      "interruptMessage": "interrupt_message.txt",
+      "stopRequest": "stop_request.txt"
+    },
+    "roomFileNames": {
+      "state": "state.json",
+      "skills": "skills.json",
+      "input": "input.json",
+      "output": "output.json"
+    },
+    "roomDirNames": {
+      "planner": "0_planner",
+      "implementer": "1_implementer",
+      "tester": "2_tester",
+      "qa_lead": "3_qa_lead",
+      "master": "4_master",
+      "interrupter": "5_interrupter"
+    }
+  },
+  "defaults": {
+    "cliBinary": "opencode",
+    "maxIterations": 20,
+    "phaseTimeoutMs": 600000,
+    "idleTimeoutMs": 90000,
+    "ptyCols": 200,
+    "ptyRows": 50,
+    "profileFallbackModels": {
+      "opencode": "opencode/big-pickle",
+      "kilo": "anthropic/claude-sonnet-4-5",
+      "_default": "anthropic/claude-sonnet-4-5"
+    }
+  },
+  "cliProfiles": {
+    "opencode": {
+      "defaultBinary": "opencode",
+      "modelsArgs": ["models"],
+      "interactionWhitelist": [
+        "Apply changes? [y/n]",
+        "Apply changes? (y/n)",
+        "Continue? [y/n]",
+        "Continue? (y/n)",
+        "Proceed? [y/n]",
+        "Proceed? (y/n)",
+        "Allow? [y/n]",
+        "Allow? (y/n)",
+        "Overwrite? [y/n]",
+        "Confirm? [y/n]",
+        "Do you want to continue? [y/n]",
+        "Do you want to apply"
+      ],
+      "extraInteractionPatterns": []
+    },
+    "kilo": {
+      "defaultBinary": "kilo",
+      "modelsArgs": ["models"],
+      "interactionWhitelist": [
+        "Apply changes? [y/n]",
+        "Apply changes? (y/n)",
+        "Continue? [y/n]",
+        "Continue? (y/n)",
+        "Proceed? [y/n]",
+        "Proceed? (y/n)",
+        "Allow? [y/n]",
+        "Allow? (y/n)",
+        "Overwrite? [y/n]",
+        "Confirm? [y/n]",
+        "Do you want to continue? [y/n]",
+        "Do you want to apply",
+        "Action Required",
+        "Run Command (y)",
+        "Allow (y)"
+      ],
+      "extraInteractionPatterns": [
+        "Action Required",
+        "Run Command (y)",
+        "Allow (y)"
+      ]
+    }
+  },
+  "destructivePrompts": [
+    "Delete",
+    "Remove all",
+    "Destroy",
+    "Force overwrite",
+    "git clean",
+    "git checkout --",
+    "git reset --hard",
+    "Drop table",
+    "Drop database"
+  ],
+  "variantDefaults": {
+    "anthropic": ["high", "max"],
+    "openai": ["none", "minimal", "low", "medium", "high", "xhigh"],
+    "google": ["low", "high"],
+    "gemini": ["low", "high"],
+    "opencode": ["none", "minimal", "low", "medium", "high", "xhigh"],
+    "opencode-go": ["none", "minimal", "low", "medium", "high", "xhigh"],
+    "kilo": ["none", "minimal", "low", "medium", "high", "xhigh"],
+    "deepseek": ["low", "medium", "high", "max"]
+  }
+}

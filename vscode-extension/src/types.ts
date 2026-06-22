@@ -1,4 +1,6 @@
 import * as vscode from "vscode";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 
 export type LoopStatus = "RUNNING" | "PAUSED" | "SUCCESS" | "FAILED";
 export type Phase = "PLANNING" | "IMPLEMENTATION" | "TEST_GENERATION" | "VERIFICATION" | "MASTER_APPROVAL" | "INTERRUPT";
@@ -153,6 +155,8 @@ export interface WebviewStatePayload {
   modelsDiscoveredCli: string | null;
   modelVariants: Record<string, string[]> | null;
   variantMapping: VariantMapping;
+  variantDefaults: Record<string, string[]>;
+  cliProfiles: Record<string, { defaultBinary: string }>;
 }
 
 export interface ExtensionConfig {
@@ -165,6 +169,104 @@ export interface ExtensionConfig {
   phaseTimeoutMs: number;
   idleTimeoutMs: number;
   pollIntervalMs: number;
+}
+
+export interface LoopPathsConfig {
+  sessionsRoot: string;
+  registryFileName: string;
+  variantsConfigFileName: string;
+  loopHistoryDirName: string;
+  sessionFileNames: {
+    state: string;
+    progressNotes: string;
+    finalSummary: string;
+    plan: string;
+    planChoices: string;
+    interruptMessage: string;
+    stopRequest: string;
+  };
+  roomFileNames: {
+    state: string;
+    skills: string;
+    input: string;
+    output: string;
+  };
+  roomDirNames: Record<string, string>;
+}
+
+export interface LoopConfig {
+  paths: LoopPathsConfig;
+  cliProfiles?: Record<string, { defaultBinary: string; modelsArgs: string[] }>;
+  variantDefaults?: Record<string, string[]>;
+}
+
+function defaultLoopPaths(): LoopPathsConfig {
+  return {
+    sessionsRoot: ".goal/sessions",
+    registryFileName: "sessions_registry.json",
+    variantsConfigFileName: "model_variants.json",
+    loopHistoryDirName: "loop_history",
+    sessionFileNames: {
+      state: "loop_state.json",
+      progressNotes: "progress_notes.txt",
+      finalSummary: "final_summary.json",
+      plan: "plan.md",
+      planChoices: "plan_choices.json",
+      interruptMessage: "interrupt_message.txt",
+      stopRequest: "stop_request.txt",
+    },
+    roomFileNames: {
+      state: "state.json",
+      skills: "skills.json",
+      input: "input.json",
+      output: "output.json",
+    },
+    roomDirNames: {
+      planner: "0_planner",
+      implementer: "1_implementer",
+      tester: "2_tester",
+      qa_lead: "3_qa_lead",
+      master: "4_master",
+      interrupter: "5_interrupter",
+    },
+  };
+}
+
+export async function loadLoopPathsConfig(rootDir: string): Promise<LoopPathsConfig> {
+  const cfgPath = path.join(rootDir, "loop_config.json");
+  const defaults = defaultLoopPaths();
+  try {
+    const raw = await fs.readFile(cfgPath, "utf-8");
+    const cfg = JSON.parse(raw) as Partial<LoopConfig>;
+    if (cfg.paths) {
+      return { ...defaults, ...cfg.paths } as LoopPathsConfig;
+    }
+    return defaults;
+  } catch {
+    return defaults;
+  }
+}
+
+export async function loadLoopVariantDefaults(rootDir: string): Promise<Record<string, string[]>> {
+  const cfgPath = path.join(rootDir, "loop_config.json");
+  try {
+    const raw = await fs.readFile(cfgPath, "utf-8");
+    const cfg = JSON.parse(raw) as Partial<LoopConfig>;
+    return cfg.variantDefaults ?? {};
+  } catch {
+    return {};
+  }
+}
+
+export async function loadCliProfilesConfig(rootDir: string): Promise<Record<string, { defaultBinary: string; modelsArgs: string[] }>> {
+  const cfgPath = path.join(rootDir, "loop_config.json");
+  try {
+    const raw = await fs.readFile(cfgPath, "utf-8");
+    const cfg = JSON.parse(raw) as Partial<LoopConfig>;
+    return cfg.cliProfiles ?? {};
+  } catch {
+    return {};
+  }
 }
 
 function normalizePathSetting(value: string | undefined): string {
