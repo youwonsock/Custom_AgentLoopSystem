@@ -176,6 +176,15 @@ html, body {
 .badge.success { background: var(--success); color: #000; }
 .badge.failed { background: var(--error); color: #fff; }
 .badge.paused { background: var(--warn); color: #000; }
+.badge.stopping {
+  background: var(--warn);
+  color: #000;
+  animation: pulse-stopping 0.8s ease-in-out infinite alternate;
+}
+@keyframes pulse-stopping {
+  from { opacity: 0.5; }
+  to { opacity: 1; }
+}
 
 .model-grid {
   display: flex;
@@ -321,6 +330,19 @@ html, body {
 .history-item .result.success { color: var(--success); }
 .history-item .result.failure { color: var(--error); }
 .history-item .result.timeout { color: var(--warn); }
+
+.history-item.running {
+  border-left: 3px solid var(--running);
+  background: rgba(86, 156, 214, 0.08);
+}
+.running-badge {
+  background: var(--running);
+  color: #fff;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  animation: pulse-stopping 1s ease-in-out infinite alternate;
+}
 
 .log-content {
   flex: 1;

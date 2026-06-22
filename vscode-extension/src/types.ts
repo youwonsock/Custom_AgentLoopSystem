@@ -181,6 +181,6 @@ export function readExtensionConfig(): ExtensionConfig {
     maxIterations: cfg.get<number>("maxIterations", 20),
     phaseTimeoutMs: cfg.get<number>("phaseTimeoutMs", 600000),
     idleTimeoutMs: cfg.get<number>("idleTimeoutMs", 90000),
-    pollIntervalMs: cfg.get<number>("pollIntervalMs", 1000),
+    pollIntervalMs: cfg.get<number>("pollIntervalMs", 500),
   };
 }

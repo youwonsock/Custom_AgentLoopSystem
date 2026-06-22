@@ -27,6 +27,14 @@
     master: "Master",
     interrupter: "Interrupter",
   };
+  const phaseToRole = {
+    PLANNING: { role: "planner", label: "Planner" },
+    IMPLEMENTATION: { role: "implementer", label: "Implementer" },
+    TEST_GENERATION: { role: "tester", label: "Tester" },
+    VERIFICATION: { role: "qa_lead", label: "QA Lead" },
+    MASTER_APPROVAL: { role: "master", label: "Master" },
+    INTERRUPT: { role: "interrupter", label: "Interrupter" },
+  };
   let modelSelections = {};
   let variantSelections = {};
 
@@ -34,6 +42,7 @@
   // lock the view to the composer regardless of existing sessions so typing
   // is not interrupted by polling-driven re-renders switching to the control panel.
   let composingNew = false;
+  let stoppingSessionId = null;
 
   // Composer state persisted across re-renders so user input is not lost.
   let composerGoal = "";
@@ -45,6 +54,7 @@
   // (select/input/textarea), defer re-renders so open dropdowns are not destroyed.
   let isInteracting = false;
   let renderQueued = false;
+  let deferredRenderTimer = null;
   let lastStateSig = "";
 
   let prevSelectedSessionId = null;
@@ -266,9 +276,12 @@
       )
       .join("");
 
+    const isStopping = stoppingSessionId === state.selectedSessionId;
     const st = state.state;
-    const statusBadge = st
-      ? `<span class="badge ${escapeHtml(st.status.toLowerCase())}">${escapeHtml(st.status)}</span>`
+    const badgeClass = isStopping ? "stopping" : (st ? st.status.toLowerCase() : "");
+    const badgeText = isStopping ? "STOPPING" : (st ? st.status : "NONE");
+    const statusBadge = st || isStopping
+      ? `<span class="badge ${escapeHtml(badgeClass)}">${escapeHtml(badgeText)}</span>`
       : "<span class=\"badge\">NONE</span>";
 
     const summaryBanner = state.finalSummary
@@ -295,7 +308,19 @@
       `
       : `<div class="notes-empty">No session selected.</div>`;
 
-    const historyList = (state.history || [])
+    let runningEntry = "";
+    if (state.state && state.state.status === "RUNNING" && !isStopping) {
+      const currentPhase = state.state.phase;
+      const mapped = phaseToRole[currentPhase];
+      if (mapped) {
+        runningEntry = `<li class="history-item running">
+          <span><span class="phase">${escapeHtml(currentPhase)}</span> &middot; ${escapeHtml(mapped.label)} &middot; loop ${state.state.loopCount}</span>
+          <span class="result running-badge">RUNNING</span>
+        </li>`;
+      }
+    }
+
+    const historyList = runningEntry + (state.history || [])
       .map(
         (h) => `<li class="history-item">
           <span><span class="phase">${escapeHtml(h.phase)}</span> &middot; ${escapeHtml(h.agentRole)} &middot; loop ${h.loopNumber}</span>
@@ -317,8 +342,9 @@
       <div class="toolbar">
         <select id="session-select">${sessionOptions}</select>
         <button class="btn secondary" id="btn-resume" ${state.isRunning ? "disabled" : ""}>Resume</button>
-        <button class="btn danger" id="btn-stop" ${!state.isRunning ? "disabled" : ""}>Stop</button>
+        <button class="btn danger" id="btn-stop" ${(isStopping || !state.isRunning) ? "disabled" : ""}>${isStopping ? "Stopping..." : "Stop"}</button>
         <button class="btn danger" id="btn-delete" ${!state.selectedSessionId ? "disabled" : ""} title="Delete this session and all its data">Delete</button>
+        <button class="btn" id="btn-new-session">New Session</button>
         <button class="btn secondary" id="btn-discover">Models</button>
         <button class="btn secondary" id="btn-open-notes">Notes</button>
       </div>
@@ -337,7 +363,7 @@
           <div class="notes-content">${notesContent}</div>
         </div>
         <div class="card history-card">
-          <h3>Loop History (${(state.history || []).length})</h3>
+          <h3>Loop History (${(state.history || []).length + (runningEntry ? 1 : 0)})</h3>
           <ul class="history-list">${historyList || '<li class="notes-empty">(no history)</li>'}</ul>
         </div>
         <div class="card log-card">
@@ -359,6 +385,7 @@
     const btnResume = document.getElementById("btn-resume");
     const btnStop = document.getElementById("btn-stop");
     const btnDelete = document.getElementById("btn-delete");
+    const btnNewSession = document.getElementById("btn-new-session");
     const btnDiscover = document.getElementById("btn-discover");
     const btnOpenNotes = document.getElementById("btn-open-notes");
     const btnOpenSummary = document.getElementById("btn-open-summary");
@@ -370,10 +397,21 @@
       if (state.selectedSessionId) vscode.postMessage({ command: "resumeSession", sessionId: state.selectedSessionId });
     };
     if (btnStop) btnStop.onclick = () => {
-      if (state.selectedSessionId) vscode.postMessage({ command: "stopSession", sessionId: state.selectedSessionId });
+      if (state.selectedSessionId) {
+        stoppingSessionId = state.selectedSessionId;
+        btnStop.disabled = true;
+        btnStop.textContent = "Stopping...";
+        vscode.postMessage({ command: "stopSession", sessionId: state.selectedSessionId });
+      }
     };
     if (btnDelete) btnDelete.onclick = () => {
       if (state.selectedSessionId) vscode.postMessage({ command: "deleteSession", sessionId: state.selectedSessionId });
+    };
+    if (btnNewSession) btnNewSession.onclick = () => {
+      composingNew = true;
+      lastStateSig = "";
+      tryRender();
+      setTimeout(() => { focusComposer(); }, 50);
     };
     if (btnDiscover) btnDiscover.onclick = () => vscode.postMessage({ command: "discoverModels" });
     if (btnOpenNotes) btnOpenNotes.onclick = () => {
@@ -551,6 +589,7 @@
       if (t && (t.tagName === "SELECT" || t.tagName === "INPUT" || t.tagName === "TEXTAREA")) {
         isInteracting = false;
         if (renderQueued) {
+          if (deferredRenderTimer) { clearTimeout(deferredRenderTimer); deferredRenderTimer = null; }
           renderQueued = false;
           tryRender();
         }
@@ -568,6 +607,15 @@
   function requestRender() {
     if (isInteracting) {
       renderQueued = true;
+      if (!deferredRenderTimer) {
+        deferredRenderTimer = setTimeout(() => {
+          deferredRenderTimer = null;
+          if (renderQueued) {
+            renderQueued = false;
+            tryRender();
+          }
+        }, 3000);
+      }
       return;
     }
     tryRender();
@@ -590,6 +638,9 @@
         } else {
           variantSelections = {};
         }
+      }
+      if (stoppingSessionId && (!msg.payload.isRunning || msg.payload.selectedSessionId !== stoppingSessionId)) {
+        stoppingSessionId = null;
       }
       state = msg.payload;
       requestRender();
