@@ -84,7 +84,9 @@ interface LoopState {
   refinedGoal: string | null;
   planningComplete: boolean;
   masterApproved: boolean;
-  lastFailureDigest: string | null;
+  awaitingPlanApproval: boolean;
+  planApproved: boolean;
+  planPath: string | null;
   createdAt: string;
   updatedAt: string;
   maxIterations: number;
@@ -93,6 +95,14 @@ interface LoopState {
   cliBinary: string;
   cliProfile: string;
   variantMapping: VariantMapping;
+  lastFailureDigest: string | null;
+  interruptMessage?: string;
+}
+
+interface PlanChoice {
+  id: number;
+  title: string;
+  body: string;
 }
 
 interface SessionMeta {
@@ -122,6 +132,7 @@ interface HandoffPayload {
   failureDigest: string | null;
   phase: Phase;
   loopCount: number;
+  interruptMessage?: string;
 }
 
 interface AgentSkills {
@@ -150,6 +161,7 @@ interface LoopHistoryEntry {
   output: string;
   result: "success" | "failure" | "timeout";
   signature: string | null;
+  interruptMessage: string | null;
 }
 
 interface FinalSummary {
@@ -331,11 +343,25 @@ const DEFAULT_SKILLS: Record<AgentRole, AgentSkills> = {
     allowedTools: ["read", "glob", "grep", "bash", "webfetch"],
     enforcedRules: [
       "Do NOT modify any source code files.",
-      "Output a clear, actionable plan as a concise text summary.",
-      "Identify the key files that need to be created or modified.",
-      "Specify the approach and any libraries to use.",
+      "Output exactly 3 numbered alternative implementation plans in the format below.",
+      "Each plan must be self-contained with full detail (title + markdown body).",
+      "Identify key files, approach, libraries, and step-by-step instructions in each plan.",
     ],
-    systemPrompt: "Analyze the goal and the target project. Produce a concise implementation plan that the implementer agent can follow step by step.",
+    systemPrompt: `Analyze the goal and the target project. Produce exactly 3 distinct, alternative implementation plans.
+
+Output MUST follow this format EXACTLY:
+
+=== PLAN OPTIONS ===
+## OPTION 1: <short descriptive title>
+<full markdown plan body with approach, files, steps, libraries>
+
+## OPTION 2: <short descriptive title>
+<full markdown plan body with approach, files, steps, libraries>
+
+## OPTION 3: <short descriptive title>
+<full markdown plan body with approach, files, steps, libraries>
+
+Each plan must be a complete, standalone implementation strategy. Vary the approach between options (e.g. different libraries, architecture patterns, or implementation paths). End after OPTION 3.`,
   },
   implementer: {
     role: "implementer",
@@ -393,6 +419,34 @@ const DEFAULT_SKILLS: Record<AgentRole, AgentSkills> = {
     systemPrompt: "The loop has paused due to detected oscillation (repeated failures). Analyze the error history and progress notes. Brief the human on what went wrong and recommend a specific course of action to break the cycle.",
   },
 };
+
+function parsePlanChoices(output: string): PlanChoice[] {
+  const marker = "=== PLAN OPTIONS ===";
+  const idx = output.indexOf(marker);
+  const section = idx >= 0 ? output.slice(idx + marker.length) : output;
+
+  const choices: PlanChoice[] = [];
+  const regex = /^## OPTION\s+(\d+):\s*(.+)$/gm;
+  const matches: { index: number; id: number; title: string }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = regex.exec(section)) !== null) {
+    matches.push({ index: m.index, id: parseInt(m[1], 10), title: m[2].trim() });
+  }
+
+  if (matches.length === 0) {
+    choices.push({ id: 1, title: "Plan", body: output.trim() });
+    return choices;
+  }
+
+  for (let i = 0; i < matches.length; i++) {
+    const start = matches[i].index + matches[i].title.length + ("## OPTION ?: ".length + String(matches[i].id).length);
+    const end = i + 1 < matches.length ? matches[i + 1].index : section.length;
+    const body = section.slice(start, end).trim();
+    choices.push({ id: matches[i].id, title: matches[i].title, body });
+  }
+
+  return choices;
+}
 
 const ROOM_DIR_NAMES: Record<AgentRole, string> = {
   planner: "0_planner",
@@ -808,6 +862,93 @@ function extractOutput(result: PtyRunResult): string {
   return stripped.trim().slice(-2000);
 }
 
+function sanitizeRefinedGoal(raw: string, fallback: string): string {
+  if (raw.length === 0) return fallback;
+  const trimmed = raw.trim();
+  if (/^\{[\s\S]*"type"\s*:\s*"(step_start|tool_use|step_finish|text)"/.test(trimmed)) {
+    return fallback;
+  }
+  if (trimmed.startsWith("<path>") || trimmed.startsWith("<type>")) {
+    return fallback;
+  }
+  const lines = trimmed.split("\n").filter((l) => {
+    const t = l.trim();
+    if (t.length === 0) return false;
+    if (/^\{[\s\S]*"type"\s*:/i.test(t)) return false;
+    if (/^<[a-z]+>/.test(t)) return false;
+    return true;
+  });
+  const cleaned = lines.join("\n").trim();
+  return cleaned.length > 0 ? cleaned : fallback;
+}
+
+function extractVerdictFromOutput(result: PtyRunResult): string {
+  const textMessages: string[] = [];
+  for (const evt of result.events) {
+    if (evt.type === "text") {
+      const val = evt.text || evt.content || evt.message;
+      if (typeof val === "string" && val.length > 0) {
+        textMessages.push(val);
+      }
+    }
+  }
+  if (textMessages.length > 0) {
+    return textMessages[textMessages.length - 1].trim();
+  }
+
+  const allMessages: string[] = [];
+  for (const evt of result.events) {
+    const contentKeys = ["content", "text", "message", "output"];
+    for (const key of contentKeys) {
+      const val = evt[key];
+      if (typeof val === "string" && val.length > 0) {
+        allMessages.push(val);
+        break;
+      }
+    }
+  }
+  if (allMessages.length > 0) {
+    return allMessages[allMessages.length - 1].trim();
+  }
+
+  const stripped = stripAnsi(result.output);
+  const sentinelIdx = stripped.indexOf(SENTINEL);
+  if (sentinelIdx >= 0) {
+    return stripped.slice(0, sentinelIdx).trim();
+  }
+
+  return stripped.trim().slice(-2000);
+}
+
+function parseMasterVerdict(output: string): "approved" | "rejected" | "unknown" {
+  const lower = output.toLowerCase().trim();
+  if (lower.length === 0) return "unknown";
+
+  const last500 = lower.slice(-500);
+
+  if (/\bapproved\b/.test(last500) && !/\bnot\s+approved\b/.test(last500)) {
+    return "approved";
+  }
+  if (/\brejected\b/.test(last500) || /\breject\b/.test(last500)) {
+    return "rejected";
+  }
+  if (/\bverdict:\s*pass\b/.test(last500)) {
+    return "approved";
+  }
+  if (/\bverdict:\s*fail\b/.test(last500)) {
+    return "rejected";
+  }
+  if (/\ball\s+tests?\s+passed\b/.test(last500)) {
+    return "approved";
+  }
+
+  if (/\bapproved\b/.test(lower) && !/\bnot\s+approved\b/.test(lower) && !/\breject(ed|ing)?\b/.test(lower.slice(-1000))) {
+    return "approved";
+  }
+
+  return "unknown";
+}
+
 function parseVerdict(output: string): boolean {
   const lower = output.toLowerCase();
   if (lower.trim().length === 0) return false;
@@ -879,6 +1020,14 @@ function buildPrompt(role: AgentRole, payload: HandoffPayload): string {
     lines.push(payload.failureDigest);
     lines.push("");
   }
+  if (payload.interruptMessage && payload.interruptMessage.length > 0) {
+    lines.push("=== HUMAN OPERATOR INTERRUPT MESSAGE ===");
+    lines.push(payload.interruptMessage);
+    lines.push("");
+    lines.push("The operator has paused this session with the above message.");
+    lines.push("Address their specific concerns in your briefing.");
+    lines.push("");
+  }
   lines.push("=== ENFORCED RULES (do NOT violate) ===");
   for (const rule of skills.enforcedRules) {
     lines.push(`- ${rule}`);
@@ -928,6 +1077,7 @@ Usage:
   agent-loop models [--binary opencode] [--profile]  List available CLI models
   agent-loop run --goal "..." --target "..." [opts]  Start a new session
   agent-loop resume --session <id> [opts]            Resume a paused session
+  agent-loop revise-plan --session <id> --message "..."  Revise the plan with AI
 
 Options for 'run':
   --goal <text>              The goal to achieve (required)
@@ -980,6 +1130,40 @@ class LoopOrchestrator {
     this.registerSignalHandlers();
 
     while (!this.disposed && this.state.status === LoopStatus.RUNNING) {
+      const interruptPath = path.join(this.sessionDir, "interrupt_message.txt");
+      try {
+        const msg = await fse.readFile(interruptPath, "utf8");
+        if (msg.trim().length > 0) {
+          await fse.remove(interruptPath);
+          this.state.interruptMessage = msg.trim();
+          this.state.phase = Phase.INTERRUPT;
+          await this.appendProgressNote(
+            `[Loop ${this.state.loopCount}] INTERRUPT: Human operator message: "${msg.trim()}"`
+          );
+          await this.saveState();
+          continue;
+        }
+      } catch {
+        // file doesn't exist — no interrupt pending
+      }
+
+      const stopPath = path.join(this.sessionDir, "stop_request.txt");
+      try {
+        const s = await fse.readFile(stopPath, "utf8");
+        if (s.trim().length > 0) {
+          await fse.remove(stopPath);
+          this.state.status = LoopStatus.PAUSED;
+          await this.appendProgressNote(
+            `[Loop ${this.state.loopCount}] STOP: User requested stop. Pausing after current phase.`
+          );
+          await this.saveState();
+          await this.saveRegistry();
+          return;
+        }
+      } catch {
+        // file doesn't exist — no stop pending
+      }
+
       if (this.state.loopCount >= this.state.maxIterations) {
         this.state.status = LoopStatus.FAILED;
         await this.saveState();
@@ -1052,6 +1236,10 @@ class LoopOrchestrator {
       return;
     }
 
+    if (this.state.awaitingPlanApproval) {
+      return;
+    }
+
     const payload: HandoffPayload = {
       sessionId: this.state.sessionId,
       refinedGoal: this.state.goal,
@@ -1070,11 +1258,18 @@ class LoopOrchestrator {
     }
 
     const output = extractOutput(result);
-    this.state.refinedGoal = output.length > 0 ? output : this.state.goal;
-    this.state.planningComplete = true;
-    this.state.phase = Phase.IMPLEMENTATION;
+    const choices = parsePlanChoices(output);
 
-    await this.appendProgressNote(`[Loop 0] PLANNING: Goal refined.`);
+    const planPath = path.join(this.sessionDir, "plan.md");
+    const choicesPath = path.join(this.sessionDir, "plan_choices.json");
+    await atomicWriteJson(choicesPath, choices);
+
+    this.state.planPath = planPath;
+    this.state.awaitingPlanApproval = true;
+    this.state.planApproved = false;
+    this.state.status = LoopStatus.PAUSED;
+
+    await this.appendProgressNote(`[Loop 0] PLANNING: ${choices.length} plan options generated. Awaiting user selection.`);
     await this.archiveLoop(0, Phase.PLANNING, "planner", result, new Date(), new Date());
   }
 
@@ -1222,8 +1417,13 @@ class LoopOrchestrator {
 
     await this.archiveLoop(this.state.loopCount, Phase.MASTER_APPROVAL, "master", result, startedAt, endedAt);
 
-    const output = extractOutput(result).toLowerCase();
-    const approved = result.exitCode === 0 && /\bapproved\b/.test(output) && !/\breject/.test(output);
+    const fullOutput = extractOutput(result);
+    const verdictText = extractVerdictFromOutput(result);
+    const verdict = parseMasterVerdict(verdictText);
+    const approved = result.exitCode === 0 && verdict === "approved";
+
+    console.log(`[orchestrator] Master verdict: ${verdict} (exitCode=${result.exitCode})`);
+    console.log(`[orchestrator] Verdict text (last 200 chars): ${verdictText.slice(-200)}`);
 
     if (approved) {
       this.state.masterApproved = true;
@@ -1233,10 +1433,10 @@ class LoopOrchestrator {
       await this.saveRegistry();
       console.log(`[orchestrator] Session ${this.state.sessionId} achieved SUCCESS.`);
     } else {
-      await this.appendProgressNote(`[Loop ${this.state.loopCount}] MASTER_APPROVAL: REJECTED. Regressing to IMPLEMENTATION.`);
+      await this.appendProgressNote(`[Loop ${this.state.loopCount}] MASTER_APPROVAL: REJECTED (${verdict}). Regressing to IMPLEMENTATION.`);
       const rejectEntry: ErrorSignature = {
-        signature: normalizeSignature(`master_reject:${output.slice(0, 80)}`),
-        rawMessage: output.slice(0, 200),
+        signature: normalizeSignature(`master_reject:${verdictText.slice(0, 80)}`),
+        rawMessage: verdictText.slice(0, 200),
         timestamp: Date.now(),
         phase: Phase.MASTER_APPROVAL,
       };
@@ -1256,6 +1456,11 @@ class LoopOrchestrator {
       .map((e) => `[${e.phase}] ${e.signature}`)
       .join("\n");
 
+    const humanMessage = this.state.interruptMessage;
+    if (humanMessage) {
+      this.state.interruptMessage = undefined;
+    }
+
     const payload: HandoffPayload = {
       sessionId: this.state.sessionId,
       refinedGoal: this.state.refinedGoal || this.state.goal,
@@ -1264,6 +1469,7 @@ class LoopOrchestrator {
       failureDigest: errorSummary,
       phase: Phase.INTERRUPT,
       loopCount: this.state.loopCount,
+      interruptMessage: humanMessage,
     };
 
     const prompt = buildPrompt("interrupter", payload);
@@ -1356,6 +1562,7 @@ class LoopOrchestrator {
       output: result.output,
       result: result.timedOut ? "timeout" : result.exitCode === 0 ? "success" : "failure",
       signature: null,
+      interruptMessage: this.state.interruptMessage ?? null,
     };
     const fileName = `loop_${loopNum}_${phase.toLowerCase()}_${role}.json`;
     const filePath = path.join(this.sessionDir, "loop_history", fileName);
@@ -1462,6 +1669,9 @@ class LoopOrchestrator {
 
     if (this.state.status === LoopStatus.RUNNING) {
       this.state.status = LoopStatus.PAUSED;
+      await this.appendProgressNote(
+        `[Loop ${this.state.loopCount}] STOPPED: Operator stopped the session via command.`
+      );
     }
     await this.saveState();
     await this.saveRegistry();
@@ -1505,6 +1715,9 @@ function createDefaultLoopState(
     refinedGoal: null,
     planningComplete: false,
     masterApproved: false,
+    awaitingPlanApproval: false,
+    planApproved: false,
+    planPath: null,
     lastFailureDigest: null,
     createdAt: now,
     updatedAt: now,
@@ -1706,6 +1919,15 @@ async function cmdRun(parsed: Record<string, string>, rootDir: string): Promise<
   const statePath = path.join(sessionDir, "loop_state.json");
   await atomicWriteJson(statePath, state);
 
+  reg.sessionMetas.push({
+    sessionId,
+    goal,
+    targetProjectPath: path.resolve(targetProjectPath),
+    status: LoopStatus.RUNNING,
+    createdAt: state.createdAt,
+  });
+  await atomicWriteJson(registryPath, reg);
+
   const orchestrator = new LoopOrchestrator(rootDir, reg, state, rooms);
   await orchestrator.run();
 
@@ -1763,6 +1985,20 @@ async function cmdResume(parsed: Record<string, string>, rootDir: string): Promi
 
   if (state.status === LoopStatus.PAUSED) {
     state.status = LoopStatus.RUNNING;
+    if (state.awaitingPlanApproval && state.planApproved) {
+      try {
+        const plan = await fse.readFile(path.join(sessionDir, "plan.md"), "utf8");
+        if (plan.trim().length > 0) state.refinedGoal = plan.trim();
+      } catch { /* plan.md not yet written */ }
+      state.planningComplete = true;
+      state.awaitingPlanApproval = false;
+      state.phase = Phase.IMPLEMENTATION;
+    } else if (state.planPath) {
+      try {
+        const plan = await fse.readFile(state.planPath, "utf8");
+        if (plan.trim().length > 0) state.refinedGoal = plan.trim();
+      } catch { /* keep existing refinedGoal */ }
+    }
     if (state.phase === Phase.INTERRUPT) {
       state.phase = Phase.IMPLEMENTATION;
     }
@@ -1789,6 +2025,84 @@ async function cmdResume(parsed: Record<string, string>, rootDir: string): Promi
   if (finalState) {
     console.log(`\n[orchestrator] Session ${sessionId} ended with status: ${finalState.status}`);
   }
+}
+
+async function cmdRevisePlan(parsed: Record<string, string>, rootDir: string): Promise<void> {
+  const sessionId = parsed.session;
+  if (!sessionId || sessionId === "true") {
+    console.error("Error: --session is required for 'revise-plan'");
+    process.exit(1);
+  }
+  const message = parsed.message || "";
+  if (!message || message === "true") {
+    console.error("Error: --message is required for 'revise-plan'");
+    process.exit(1);
+  }
+
+  const registryPath = path.join(rootDir, "sessions_registry.json");
+  const registry = await atomicReadJson<SessionRegistry>(registryPath);
+  if (!registry) {
+    console.error(`Error: No registry found at ${registryPath}.`);
+    process.exit(1);
+  }
+
+  const sessionDir = path.join(rootDir, ".goal", "sessions", sessionId);
+  const statePath = path.join(sessionDir, "loop_state.json");
+  const state = await atomicReadJson<LoopState>(statePath);
+  if (!state) {
+    console.error(`Error: No session found with ID ${sessionId}`);
+    process.exit(1);
+  }
+
+  const planPath = state.planPath || path.join(sessionDir, "plan.md");
+  let currentPlan = "";
+  try { currentPlan = await fse.readFile(planPath, "utf8"); } catch { /* empty */ }
+
+  const payload: HandoffPayload = {
+    sessionId: state.sessionId,
+    refinedGoal: state.refinedGoal || state.goal,
+    targetProjectPath: state.targetProjectPath,
+    progressNotes: "",
+    failureDigest: null,
+    phase: state.phase,
+    loopCount: state.loopCount,
+  };
+
+  const prompt = `You are the planner agent. Revise the plan according to the user's request.
+
+Current Plan:
+${currentPlan || "(no plan yet — the goal is: " + (state.refinedGoal || state.goal) + ")"}
+
+User Revision Request: ${message}
+
+Output the full revised plan as markdown only. Do not include the original prompt or any meta-commentary. Output ONLY the revised markdown plan.`;
+
+  const handle = spawnCliPty({
+    model: state.modelMapping.planner,
+    agentRole: "planner",
+    sessionId: state.sessionId,
+    targetProjectPath: state.targetProjectPath,
+    prompt,
+    timeoutMs: state.phaseTimeoutMs,
+    idleTimeoutMs: state.idleTimeoutMs,
+    cliBinary: state.cliBinary,
+    cliProfile: resolveCliProfile(state.cliProfile, state.cliBinary),
+    phaseLabel: "PLAN_REVISION",
+    variant: state.variantMapping?.planner,
+  });
+
+  const result = await handle.done;
+
+  const output = extractOutput(result);
+  await fse.writeFile(planPath, output, "utf8");
+
+  if (!state.planPath) {
+    state.planPath = planPath;
+    await atomicWriteJson(statePath, state);
+  }
+
+  console.log(output);
+  process.exit(result.exitCode === 0 ? 0 : 1);
 }
 
 async function main(): Promise<void> {
@@ -1820,6 +2134,9 @@ async function main(): Promise<void> {
       break;
     case "resume":
       await cmdResume(parsed, rootDir);
+      break;
+    case "revise-plan":
+      await cmdRevisePlan(parsed, rootDir);
       break;
     default:
       console.error(`Unknown command: ${command}`);

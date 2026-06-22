@@ -49,6 +49,15 @@ export interface LoopState {
   cliBinary: string;
   cliProfile: string;
   variantMapping: VariantMapping;
+  awaitingPlanApproval: boolean;
+  planApproved: boolean;
+  planPath: string | null;
+}
+
+export interface PlanChoice {
+  id: number;
+  title: string;
+  body: string;
 }
 
 export interface SessionMeta {
@@ -81,6 +90,7 @@ export interface LoopHistoryEntry {
   output: string;
   result: "success" | "failure" | "timeout";
   signature: string | null;
+  interruptMessage?: string | null;
 }
 
 export interface FinalSummary {
@@ -112,7 +122,23 @@ export type WebviewMessage =
   | { command: "openProgressNotes"; sessionId: string }
   | { command: "openFinalSummary"; sessionId: string }
   | { command: "deleteSession"; sessionId: string }
-  | { command: "setCliProfile"; profile: string };
+  | { command: "setCliProfile"; profile: string }
+  | { command: "openSessionFolder"; sessionId: string }
+  | { command: "interruptSession"; sessionId: string; message: string }
+  | { command: "selectPlanChoice"; sessionId: string; choiceId: number }
+  | { command: "revisePlan"; sessionId: string; message: string }
+  | { command: "approvePlan"; sessionId: string }
+  | { command: "requestPlanReviewState"; sessionId: string };
+
+export interface PlanReviewStatePayload {
+  sessionId: string;
+  awaitingPlanApproval: boolean;
+  planApproved: boolean;
+  choices: PlanChoice[] | null;
+  planMd: string | null;
+  isPaused: boolean;
+  phase: Phase | null;
+}
 
 export interface WebviewStatePayload {
   registry: SessionRegistry;

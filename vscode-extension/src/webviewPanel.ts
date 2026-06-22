@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import * as fs from "node:fs";
 import * as vscode from "vscode";
 import {
   WebviewMessage,
@@ -21,6 +22,7 @@ export class LoopWebviewPanel {
   private selectedSessionId: string | null = null;
   private logBuffers: Map<string, string> = new Map();
   private readonly maxLogBuffer = 50000;
+  private lastOpenedPlanSession: string | null = null;
 
   private constructor(
     private readonly context: vscode.ExtensionContext,
@@ -108,8 +110,12 @@ export class LoopWebviewPanel {
         await this.handleResume(msg);
         break;
       case "stopSession":
-        this.client.stopSession(msg.sessionId);
-        vscode.window.showInformationMessage(`Agent Loop: Stopped session ${msg.sessionId}`);
+        {
+          const sessionDir = await this.store.getSessionDir(msg.sessionId);
+          const stopPath = path.join(sessionDir, "stop_request.txt");
+          await fs.promises.writeFile(stopPath, "stop", "utf8");
+          vscode.window.showInformationMessage(`Agent Loop: Stop requested for ${msg.sessionId}. Session will pause after current work completes.`);
+        }
         await this.refresh();
         break;
       case "discoverModels":
@@ -165,7 +171,50 @@ export class LoopWebviewPanel {
       case "deleteSession":
         await this.handleDeleteSession(msg.sessionId);
         break;
+      case "openSessionFolder": {
+        const sessionDir = await this.store.getSessionDir(msg.sessionId);
+        await fs.promises.mkdir(sessionDir, { recursive: true });
+        await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(sessionDir));
+        break;
+      }
+      case "interruptSession": {
+        const sessionDir = await this.store.getSessionDir(msg.sessionId);
+        const interruptPath = path.join(sessionDir, "interrupt_message.txt");
+        await fs.promises.writeFile(interruptPath, msg.message, "utf8");
+        const statePath = path.join(sessionDir, "loop_state.json");
+        let planPath: string | null = null;
+        let fallbackContent: string | null = null;
+        try {
+          const stateRaw = await fs.promises.readFile(statePath, "utf8");
+          const loopState: LoopState = JSON.parse(stateRaw);
+          planPath = loopState.planPath || path.join(sessionDir, "plan.md");
+          fallbackContent = loopState.refinedGoal || loopState.goal || "";
+        } catch {
+          // state file may not exist yet
+        }
+        try {
+          if (planPath) {
+            await fs.promises.access(planPath);
+            const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(planPath));
+            await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside, preview: false });
+          } else if (fallbackContent) {
+            const doc = await vscode.workspace.openTextDocument({
+              content: `# Agent Loop Plan \u2014 ${msg.sessionId}\n\n${fallbackContent}`,
+              language: "markdown",
+            });
+            await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside, preview: false });
+          }
+        } catch { /* plan file may not exist */ }
+        vscode.window.showInformationMessage(`Interrupt sent to ${msg.sessionId}. Plan document opened.`);
+        break;
+      }
     }
+  }
+
+  public selectSession(sessionId: string): void {
+    this.selectedSessionId = sessionId;
+    this.show();
+    this.refresh();
   }
 
   postFocusComposer(): void {
@@ -305,6 +354,16 @@ export class LoopWebviewPanel {
     });
     this.client.onExit(sessionId, async () => {
       await this.refresh();
+      const bundle = await this.store.readBundle(sessionId);
+      if (bundle.state?.status === "SUCCESS") {
+        vscode.window.showInformationMessage(
+          `Agent Loop: Session ${sessionId} completed successfully.`
+        );
+      } else if (bundle.state?.status === "FAILED") {
+        vscode.window.showWarningMessage(
+          `Agent Loop: Session ${sessionId} failed.`
+        );
+      }
       setTimeout(() => {
         this.logBuffers.delete(sessionId);
         this.client.removeLogListener(sessionId);
@@ -348,9 +407,25 @@ export class LoopWebviewPanel {
       progressNotes = bundle.progressNotes;
       history = bundle.history;
       finalSummary = bundle.finalSummary;
+
+      if (state?.status === "PAUSED" && state.planPath && this.lastOpenedPlanSession !== this.selectedSessionId) {
+        this.lastOpenedPlanSession = this.selectedSessionId;
+        try {
+          await fs.promises.access(state.planPath);
+          const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(state.planPath));
+          await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside, preview: false });
+        } catch { /* plan.md does not exist yet */ }
+        try {
+          await vscode.commands.executeCommand("agentLoop.planReviewView.focus");
+        } catch { /* view may not be registered yet */ }
+      } else if (state?.status !== "PAUSED") {
+        this.lastOpenedPlanSession = null;
+      }
     }
 
-    const isRunning = this.selectedSessionId ? this.client.isRunning(this.selectedSessionId) : false;
+    const isRunning = this.selectedSessionId
+      ? (this.client.isRunning(this.selectedSessionId) || state?.status === "RUNNING")
+      : false;
 
     const defaultTargetPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
     const liveCfg = readExtensionConfig();

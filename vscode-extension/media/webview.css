@@ -114,6 +114,22 @@ html, body {
   cursor: not-allowed;
 }
 
+.btn.warn {
+  background: #f0a500;
+  color: #000;
+}
+
+.btn.warn:hover {
+  background: #d99500;
+}
+
+.pending-indicator {
+  font-size: 0.75em;
+  font-weight: 400;
+  color: #f0a500;
+  animation: pulse 1.5s infinite;
+}
+
 .main-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -179,11 +195,26 @@ html, body {
 .badge.stopping {
   background: var(--warn);
   color: #000;
-  animation: pulse-stopping 0.8s ease-in-out infinite alternate;
+  animation: pulse 0.8s ease-in-out infinite alternate;
+}
+@keyframes pulse {
+  from { opacity: 0.5; }
+  to { opacity: 1; }
 }
 @keyframes pulse-stopping {
   from { opacity: 0.5; }
   to { opacity: 1; }
+}
+.badge.interrupting {
+  background: #f0a500;
+  animation: pulse 1.5s infinite;
+}
+.interrupt-msg {
+  font-size: 0.85em;
+  color: #f0a500;
+  margin-top: 2px;
+  padding-left: 8px;
+  border-left: 2px solid #f0a500;
 }
 
 .model-grid {

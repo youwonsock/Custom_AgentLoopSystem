@@ -242,6 +242,27 @@ export class LoopClient {
     return Array.from(this.activeProcesses.keys());
   }
 
+  async revisePlan(sessionId: string, message: string): Promise<{ exitCode: number | null; stdout: string }> {
+    const root = await this.store.getRootDir();
+    const script = await this.resolveOrchestratorScript();
+    const args: string[] = [
+      script,
+      "revise-plan",
+      "--session", sessionId,
+      "--root", root,
+      "--message", message,
+    ];
+
+    return new Promise((resolve) => {
+      const child = spawn(this.config.nodeBinary, args, { cwd: root, env: process.env });
+      let stdout = "";
+      child.stdout.on("data", (c: Buffer) => { stdout += c.toString(); });
+      child.stderr.on("data", (_c: Buffer) => { /* captured for logging but not sent to reject */ });
+      child.on("error", (err) => resolve({ exitCode: -1, stdout: err.message }));
+      child.on("exit", (code) => resolve({ exitCode: code, stdout }));
+    });
+  }
+
   onLog(sessionId: string, listener: (entry: LogEntry) => void): void {
     this.logListeners.set(sessionId, listener);
   }

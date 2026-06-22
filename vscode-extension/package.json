@@ -2,7 +2,7 @@
   "name": "agent-loop-vscode",
   "displayName": "Agent Loop Orchestrator",
   "description": "VS Code extension that controls the Custom Agent Loop System CLI to autonomously achieve coding goals via a multi-model multi-session orchestrator.",
-  "version": "2.0.6",
+  "version": "3.1.0",
   "publisher": "custom-agent-loop",
   "license": "MIT",
   "repository": {
@@ -83,10 +83,22 @@
         {
           "id": "agentLoopExplorer",
           "name": "Sessions"
+        },
+        {
+          "id": "agentLoopPlanReview",
+          "name": "Plan Review",
+          "type": "webview"
         }
       ]
     },
     "menus": {
+      "view/title": [
+        {
+          "command": "agentLoop.newSession",
+          "when": "view == agentLoopExplorer",
+          "group": "navigation"
+        }
+      ],
       "view/item/context": [
         {
           "command": "agentLoop.deleteSession",

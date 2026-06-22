@@ -3,11 +3,13 @@ import { readExtensionConfig, SessionMeta, ExtensionConfig } from "./types";
 import { StateStore, setGlobalContext } from "./stateStore";
 import { LoopClient } from "./loopClient";
 import { LoopWebviewPanel } from "./webviewPanel";
+import { PlanReviewViewProvider } from "./planReviewView";
 
 let store: StateStore | undefined;
 let client: LoopClient | undefined;
 let config: ExtensionConfig;
 let globalContext: vscode.ExtensionContext | undefined;
+let planReviewView: PlanReviewViewProvider | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   setGlobalContext(context);
@@ -56,10 +58,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("agentLoop.showPanel", async () => {
+    vscode.commands.registerCommand("agentLoop.showPanel", async (sessionId?: string) => {
       await store!.ensureInitialized();
       const panel = LoopWebviewPanel.getInstance(context, store!, client!, config);
       panel.show();
+      if (sessionId) {
+        panel.selectSession(sessionId);
+      }
     }),
 
     vscode.commands.registerCommand("agentLoop.newSession", async () => {
@@ -190,6 +195,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.registerTreeDataProvider("agentLoopExplorer", sessionExplorerProvider)
   );
 
+  planReviewView = new PlanReviewViewProvider(context, store!, client!);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider("agentLoopPlanReview", planReviewView, {
+      webviewOptions: { retainContextWhenHidden: true },
+    })
+  );
+
   context.subscriptions.push({
     dispose: () => {
       store?.stopPolling();
@@ -234,7 +246,7 @@ class SessionExplorerProvider implements vscode.TreeDataProvider<SessionNode> {
           {
             command: "agentLoop.showPanel",
             title: "Show Panel",
-            arguments: [],
+            arguments: [m.sessionId],
           }
         )
     );

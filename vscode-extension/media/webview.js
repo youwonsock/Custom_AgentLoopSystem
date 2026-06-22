@@ -325,6 +325,7 @@
         (h) => `<li class="history-item">
           <span><span class="phase">${escapeHtml(h.phase)}</span> &middot; ${escapeHtml(h.agentRole)} &middot; loop ${h.loopNumber}</span>
           <span class="result ${escapeHtml(h.result)}">${escapeHtml(h.result)} (${h.exitCode})</span>
+          ${h.interruptMessage ? `<div class="interrupt-msg">Interrupt: ${escapeHtml(h.interruptMessage)}</div>` : ""}
         </li>`
       )
       .join("");
@@ -344,9 +345,9 @@
         <button class="btn secondary" id="btn-resume" ${state.isRunning ? "disabled" : ""}>Resume</button>
         <button class="btn danger" id="btn-stop" ${(isStopping || !state.isRunning) ? "disabled" : ""}>${isStopping ? "Stopping..." : "Stop"}</button>
         <button class="btn danger" id="btn-delete" ${!state.selectedSessionId ? "disabled" : ""} title="Delete this session and all its data">Delete</button>
-        <button class="btn" id="btn-new-session">New Session</button>
         <button class="btn secondary" id="btn-discover">Models</button>
         <button class="btn secondary" id="btn-open-notes">Notes</button>
+        <button class="btn secondary" id="btn-open-session">Folder</button>
       </div>
       <div class="main-grid">
         <div class="card status-card">
@@ -359,11 +360,11 @@
           <div class="model-grid">${modelGrid}</div>
         </div>
         <div class="card notes-card">
-          <h3>Progress Notes (Rolling Summary)</h3>
+          <h3>Progress Notes (Rolling Summary)${isStopping ? '<span class="pending-indicator"> \u2014 stopping after current work completes</span>' : ""}</h3>
           <div class="notes-content">${notesContent}</div>
         </div>
         <div class="card history-card">
-          <h3>Loop History (${(state.history || []).length + (runningEntry ? 1 : 0)})</h3>
+          <h3>Loop History (${(state.history || []).length + (runningEntry ? 1 : 0)})${isStopping ? '<span class="pending-indicator"> \u2014 stopping after current work completes</span>' : ""}</h3>
           <ul class="history-list">${historyList || '<li class="notes-empty">(no history)</li>'}</ul>
         </div>
         <div class="card log-card">
@@ -371,12 +372,10 @@
           ${logContent}
         </div>
       </div>
-      ${composerHtml(true)}
     `;
 
     bindToolbar();
     bindModelSelects();
-    bindComposer();
     scrollLogToBottom();
   }
 
@@ -385,7 +384,6 @@
     const btnResume = document.getElementById("btn-resume");
     const btnStop = document.getElementById("btn-stop");
     const btnDelete = document.getElementById("btn-delete");
-    const btnNewSession = document.getElementById("btn-new-session");
     const btnDiscover = document.getElementById("btn-discover");
     const btnOpenNotes = document.getElementById("btn-open-notes");
     const btnOpenSummary = document.getElementById("btn-open-summary");
@@ -407,18 +405,17 @@
     if (btnDelete) btnDelete.onclick = () => {
       if (state.selectedSessionId) vscode.postMessage({ command: "deleteSession", sessionId: state.selectedSessionId });
     };
-    if (btnNewSession) btnNewSession.onclick = () => {
-      composingNew = true;
-      lastStateSig = "";
-      tryRender();
-      setTimeout(() => { focusComposer(); }, 50);
-    };
     if (btnDiscover) btnDiscover.onclick = () => vscode.postMessage({ command: "discoverModels" });
     if (btnOpenNotes) btnOpenNotes.onclick = () => {
       if (state.selectedSessionId) vscode.postMessage({ command: "openProgressNotes", sessionId: state.selectedSessionId });
     };
     if (btnOpenSummary) btnOpenSummary.onclick = () => {
       if (state.selectedSessionId) vscode.postMessage({ command: "openFinalSummary", sessionId: state.selectedSessionId });
+    };
+    const btnOpenSession = document.getElementById("btn-open-session");
+    if (btnOpenSession) btnOpenSession.onclick = () => {
+      if (state.selectedSessionId)
+        vscode.postMessage({ command: "openSessionFolder", sessionId: state.selectedSessionId });
     };
   }
 

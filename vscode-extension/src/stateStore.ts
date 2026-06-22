@@ -100,6 +100,35 @@ export class StateStore {
     return path.join(root, ".goal", "sessions", sessionId);
   };
 
+  getPlanChoicesPath = async (sessionId: string): Promise<string> => {
+    const dir = await this.getSessionDir(sessionId);
+    return path.join(dir, "plan_choices.json");
+  };
+
+  getPlanMdPath = async (sessionId: string): Promise<string> => {
+    const dir = await this.getSessionDir(sessionId);
+    return path.join(dir, "plan.md");
+  };
+
+  async readPlanChoices(sessionId: string): Promise<any[] | null> {
+    const p = await this.getPlanChoicesPath(sessionId);
+    try {
+      const raw = await fs.readFile(p, "utf8");
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  async readPlanMd(sessionId: string): Promise<string | null> {
+    const p = await this.getPlanMdPath(sessionId);
+    try {
+      return await fs.readFile(p, "utf8");
+    } catch {
+      return null;
+    }
+  }
+
   async ensureInitialized(): Promise<void> {
     const registryPath = await this.getRegistryPath();
     try {
