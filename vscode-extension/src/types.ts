@@ -13,6 +13,8 @@ export interface ModelMapping {
   interrupter: string;
 }
 
+export type VariantMapping = Partial<Record<AgentRole, string>>;
+
 export interface ErrorSignature {
   signature: string;
   rawMessage: string;
@@ -46,6 +48,7 @@ export interface LoopState {
   idleTimeoutMs: number;
   cliBinary: string;
   cliProfile: string;
+  variantMapping: VariantMapping;
 }
 
 export interface SessionMeta {
@@ -64,6 +67,7 @@ export interface SessionRegistry {
   modelsDiscoveredCli: string | null;
   sessionMetas: SessionMeta[];
   manualModelsOverride: string[] | null;
+  modelVariants: Record<string, string[]> | null;
 }
 
 export interface LoopHistoryEntry {
@@ -99,7 +103,7 @@ export interface SessionBundle {
 
 export type WebviewMessage =
   | { command: "requestState" }
-  | { command: "newSession"; goal: string; targetProjectPath: string; cliProfile?: string; modelMapping: Partial<ModelMapping> }
+  | { command: "newSession"; goal: string; targetProjectPath: string; cliProfile?: string; modelMapping: Partial<ModelMapping>; variantMapping?: Partial<VariantMapping> }
   | { command: "resumeSession"; sessionId: string }
   | { command: "stopSession"; sessionId: string }
   | { command: "discoverModels" }
@@ -107,7 +111,8 @@ export type WebviewMessage =
   | { command: "refreshModels" }
   | { command: "openProgressNotes"; sessionId: string }
   | { command: "openFinalSummary"; sessionId: string }
-  | { command: "deleteSession"; sessionId: string };
+  | { command: "deleteSession"; sessionId: string }
+  | { command: "setCliProfile"; profile: string };
 
 export interface WebviewStatePayload {
   registry: SessionRegistry;
@@ -120,6 +125,8 @@ export interface WebviewStatePayload {
   defaultTargetPath: string;
   cliProfile: string;
   modelsDiscoveredCli: string | null;
+  modelVariants: Record<string, string[]> | null;
+  variantMapping: VariantMapping;
 }
 
 export interface ExtensionConfig {

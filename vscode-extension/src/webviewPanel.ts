@@ -8,6 +8,7 @@ import {
   LoopHistoryEntry,
   FinalSummary,
   ModelMapping,
+  VariantMapping,
   ExtensionConfig,
   readExtensionConfig,
 } from "./types";
@@ -114,9 +115,43 @@ export class LoopWebviewPanel {
       case "discoverModels":
         await this.handleDiscoverModels();
         break;
+      case "setCliProfile": {
+        const cfg = vscode.workspace.getConfiguration("agentLoop");
+        const currentProfile = cfg.get<string>("cliProfile", "opencode");
+        if (msg.profile && msg.profile !== currentProfile) {
+          await cfg.update("cliProfile", msg.profile, vscode.ConfigurationTarget.Global);
+          const profileDefaults: Record<string, string> = { opencode: "opencode", kilo: "kilo" };
+          const expectedBinary = profileDefaults[msg.profile];
+          if (expectedBinary) {
+            const currentBinary = cfg.get<string>("cliBinary", "opencode");
+            if (expectedBinary !== currentBinary) {
+              await cfg.update("cliBinary", expectedBinary, vscode.ConfigurationTarget.Global);
+            }
+          }
+        }
+        break;
+      }
       case "selectSession":
         this.selectedSessionId = msg.sessionId;
         await this.refresh();
+        {
+          const bundle = await this.store.readBundle(msg.sessionId);
+          if (bundle.state?.cliProfile) {
+            const cfg = vscode.workspace.getConfiguration("agentLoop");
+            const currentProfile = cfg.get<string>("cliProfile", "opencode");
+            if (bundle.state.cliProfile !== currentProfile) {
+              await cfg.update("cliProfile", bundle.state.cliProfile, vscode.ConfigurationTarget.Global);
+              const profileDefaults: Record<string, string> = { opencode: "opencode", kilo: "kilo" };
+              const expectedBinary = profileDefaults[bundle.state.cliProfile];
+              if (expectedBinary) {
+                const currentBinary = cfg.get<string>("cliBinary", "opencode");
+                if (expectedBinary !== currentBinary) {
+                  await cfg.update("cliBinary", expectedBinary, vscode.ConfigurationTarget.Global);
+                }
+              }
+            }
+          }
+        }
         break;
       case "refreshModels":
         await this.handleDiscoverModels();
@@ -138,7 +173,7 @@ export class LoopWebviewPanel {
     this.postMessage({ command: "focusComposer" });
   }
 
-  private async handleNewSession(msg: { goal: string; targetProjectPath: string; cliProfile?: string; modelMapping: Partial<ModelMapping> }): Promise<void> {
+  private async handleNewSession(msg: { goal: string; targetProjectPath: string; cliProfile?: string; modelMapping: Partial<ModelMapping>; variantMapping?: Partial<VariantMapping> }): Promise<void> {
     if (!msg.goal || msg.goal.trim().length === 0) {
       vscode.window.showErrorMessage("Goal is required.");
       return;
@@ -168,6 +203,7 @@ export class LoopWebviewPanel {
         goal: msg.goal,
         targetProjectPath: target,
         modelMapping: msg.modelMapping,
+        variantMapping: msg.variantMapping,
       });
       this.attachLogListener(procId);
       // Don't set selectedSessionId here — let doRefresh() auto-select the newly created
@@ -330,6 +366,8 @@ export class LoopWebviewPanel {
       defaultTargetPath,
       cliProfile: liveCfg.cliProfile,
       modelsDiscoveredCli: registry.modelsDiscoveredCli ?? null,
+      modelVariants: registry.modelVariants ?? null,
+      variantMapping: state?.variantMapping ?? {},
     };
 
     this.postMessage({ command: "stateUpdate", payload });

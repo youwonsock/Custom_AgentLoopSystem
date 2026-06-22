@@ -38,4 +38,4 @@ test/**/tmp/
 coverage/
 
 # Plans (kilo) - keep plans dir but ignore any local-only notes
-.kilo/local/
+.kilo/*

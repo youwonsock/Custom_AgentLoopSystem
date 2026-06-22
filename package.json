@@ -11,7 +11,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "start": "node dist/loop_orchestrator.js",
-    "init": "node dist/loop_orchestrator.js init"
+    "init": "node dist/loop_orchestrator.js init",
+    "postinstall": "node scripts/fix-pty-permissions.js"
   },
   "engines": {
     "node": ">=18.0.0"

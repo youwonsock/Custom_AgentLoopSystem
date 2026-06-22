@@ -115,6 +115,7 @@ export class StateStore {
         modelsDiscoveredCli: null,
         sessionMetas: [],
         manualModelsOverride: null,
+        modelVariants: null,
       };
       await this.writeJsonAtomic(registryPath, empty);
       this.registryCache = empty;
@@ -158,6 +159,7 @@ export class StateStore {
       modelsDiscoveredCli: null,
       sessionMetas: [],
       manualModelsOverride: null,
+      modelVariants: null,
     };
     this.registryCache = fallback;
     return fallback;

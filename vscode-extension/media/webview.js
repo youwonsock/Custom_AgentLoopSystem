@@ -11,6 +11,8 @@
     isRunning: false,
     defaultTargetPath: "",
     cliProfile: "opencode",
+    modelVariants: null,
+    variantMapping: {},
   };
 
   let logBuffer = "";
@@ -26,6 +28,7 @@
     interrupter: "Interrupter",
   };
   let modelSelections = {};
+  let variantSelections = {};
 
   // Compose mode: when the user explicitly starts a "New Session" flow,
   // lock the view to the composer regardless of existing sessions so typing
@@ -43,6 +46,8 @@
   let isInteracting = false;
   let renderQueued = false;
   let lastStateSig = "";
+
+  let prevSelectedSessionId = null;
 
   function stateSignature() {
     const st = state.state;
@@ -65,6 +70,10 @@
       hasSummary: !!state.finalSummary,
       defTarget: state.defaultTargetPath,
       cliProfile: state.cliProfile,
+      variantMapping: state.variantMapping,
+      modelVariants: state.modelVariants,
+      modelSelections,
+      variantSelections,
     });
   }
 
@@ -106,6 +115,49 @@
     return html;
   }
 
+  function mapVariantByIndex(currentVariant, oldVariants, newVariants) {
+    if (!currentVariant || oldVariants.length === 0) return "";
+    if (newVariants.length === 0) return "";
+    if (newVariants.includes(currentVariant)) return currentVariant;
+    var oldIdx = oldVariants.indexOf(currentVariant);
+    if (oldIdx === -1) return "";
+    var ratio = oldIdx / (oldVariants.length - 1);
+    var newIdx = Math.round(ratio * (newVariants.length - 1));
+    return newVariants[newIdx] || "";
+  }
+
+  function getModelVariants(modelId) {
+    if (!modelId) return [];
+    const regOverrides = state.modelVariants?.[modelId];
+    if (regOverrides) return regOverrides;
+    const slashIdx = modelId.indexOf("/");
+    const provider = slashIdx > 0 ? modelId.slice(0, slashIdx).toLowerCase() : "";
+    const defaults = {
+      anthropic: ["high", "max"],
+      openai: ["none", "minimal", "low", "medium", "high", "xhigh"],
+      google: ["low", "high"],
+      gemini: ["low", "high"],
+      opencode: ["none", "minimal", "low", "medium", "high", "xhigh"],
+      "opencode-go": ["none", "minimal", "low", "medium", "high", "xhigh"],
+      kilo: ["none", "minimal", "low", "medium", "high", "xhigh"],
+      deepseek: ["low", "medium", "high", "max"],
+    };
+    return defaults[provider] || [];
+  }
+
+  function buildVariantSelect(role, currentModel) {
+    const variants = getModelVariants(currentModel);
+    if (variants.length === 0) return "";
+    const current = variantSelections[role] || state.state?.variantMapping?.[role] || "";
+    const options = variants.map(function (v) {
+      return "<option value=\"" + escapeHtml(v) + "\"" + (v === current ? " selected" : "") + ">" + escapeHtml(v) + "</option>";
+    }).join("");
+    return "<select data-role=\"" + escapeHtml(role) + "\" data-field=\"variant\" class=\"model-select variant-select\">" +
+      "<option value=\"\">(default)</option>" +
+      options +
+      "</select>";
+  }
+
   function buildModelGrid(st) {
     const { grouped, providerNames } = buildGroupedModels();
     return agentRoles
@@ -118,6 +170,7 @@
             <select data-role="${escapeHtml(role)}" class="model-select">
               ${buildModelOptions(current, grouped, providerNames)}
             </select>
+            ${buildVariantSelect(role, current)}
           </div>`;
       })
       .join("");
@@ -133,6 +186,7 @@
         <select id="apply-all-model" class="model-select apply-all-select">
           ${buildModelOptions(currentBulk, grouped, providerNames)}
         </select>
+        ${buildVariantSelect("apply-all", currentBulk)}
       </div>`;
   }
 
@@ -176,6 +230,7 @@
             <select data-role="${escapeHtml(role)}" class="model-select">
               ${buildModelOptions(current, grouped, providerNames)}
             </select>
+            ${buildVariantSelect(role, current)}
           </div>`;
       })
       .join("");
@@ -333,19 +388,48 @@
     document.querySelectorAll("select[data-role]").forEach((sel) => {
       sel.onchange = (e) => {
         const role = e.target.getAttribute("data-role");
-        modelSelections[role] = e.target.value;
+        if (e.target.dataset.field === "variant") {
+          if (role === "apply-all") {
+            const val = e.target.value;
+            for (const r of agentRoles) {
+              variantSelections[r] = val;
+            }
+            document.querySelectorAll("select[data-role][data-field='variant']").forEach((sel) => {
+              if (sel.getAttribute("data-role") !== "apply-all") sel.value = val;
+            });
+          } else {
+            variantSelections[role] = e.target.value;
+          }
+          requestRender();
+        } else {
+          var oldModel = modelSelections[role] || "";
+          var newModel = e.target.value;
+          var oldVariants = oldModel ? getModelVariants(oldModel) : [];
+          var newVariants = getModelVariants(newModel);
+          modelSelections[role] = newModel;
+          variantSelections[role] = mapVariantByIndex(variantSelections[role], oldVariants, newVariants);
+          requestRender();
+        }
       };
     });
     const applyAll = document.getElementById("apply-all-model");
     if (applyAll) applyAll.onchange = (e) => {
       const val = e.target.value;
       for (const role of agentRoles) {
+        var oldModel = modelSelections[role] || "";
+        var oldVariants = oldModel ? getModelVariants(oldModel) : [];
+        var newVariants = getModelVariants(val);
         modelSelections[role] = val;
+        variantSelections[role] = mapVariantByIndex(variantSelections[role], oldVariants, newVariants);
       }
       document.querySelectorAll("select[data-role]").forEach((sel) => {
         const role = sel.getAttribute("data-role");
-        if (role) sel.value = val;
+        if (!sel.dataset.field && role) sel.value = val;
       });
+      document.querySelectorAll("select[data-role][data-field='variant']").forEach((sel) => {
+        sel.value = "";
+      });
+      requestRender();
     };
   }
 
@@ -386,7 +470,10 @@
     const profileEl = document.getElementById("composer-profile");
     if (profileEl) {
       profileEl.value = composerProfile;
-      profileEl.onchange = (e) => { composerProfile = e.target.value; };
+      profileEl.onchange = (e) => {
+        composerProfile = e.target.value;
+        vscode.postMessage({ command: "setCliProfile", profile: e.target.value });
+      };
     }
     if (startBtn) startBtn.onclick = () => sendNewSession();
     if (cancelBtn) cancelBtn.onclick = () => cancelCompose();
@@ -406,12 +493,17 @@
     for (const role of agentRoles) {
       if (modelSelections[role]) mapping[role] = modelSelections[role];
     }
+    const variantMapping = {};
+    for (const role of agentRoles) {
+      if (variantSelections[role]) variantMapping[role] = variantSelections[role];
+    }
     vscode.postMessage({
       command: "newSession",
       goal: goal.trim(),
       targetProjectPath: (composerTarget || composerTargetDefault()).trim(),
       cliProfile: composerProfile || "opencode",
       modelMapping: mapping,
+      variantMapping: variantMapping,
     });
     composingNew = false;
     composerGoal = "";
@@ -486,6 +578,19 @@
     if (!msg || !msg.command) return;
 
     if (msg.command === "stateUpdate") {
+      if (msg.payload.selectedSessionId !== prevSelectedSessionId) {
+        prevSelectedSessionId = msg.payload.selectedSessionId;
+        if (msg.payload.selectedSessionId && msg.payload.state?.cliProfile) {
+          composerProfile = msg.payload.state.cliProfile;
+        } else if (!msg.payload.selectedSessionId) {
+          composerProfile = msg.payload.cliProfile || "opencode";
+        }
+        if (msg.payload.variantMapping) {
+          variantSelections = { ...msg.payload.variantMapping };
+        } else {
+          variantSelections = {};
+        }
+      }
       state = msg.payload;
       requestRender();
     } else if (msg.command === "logAppend") {

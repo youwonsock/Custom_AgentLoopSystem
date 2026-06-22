@@ -2,7 +2,7 @@
   "name": "agent-loop-vscode",
   "displayName": "Agent Loop Orchestrator",
   "description": "VS Code extension that controls the Custom Agent Loop System CLI to autonomously achieve coding goals via a multi-model multi-session orchestrator.",
-  "version": "1.2.1",
+  "version": "2.0.5",
   "publisher": "custom-agent-loop",
   "license": "MIT",
   "repository": {
@@ -87,30 +87,6 @@
       ]
     },
     "menus": {
-      "view/title": [
-        {
-          "command": "agentLoop.newSession",
-          "when": "view == agentLoopExplorer",
-          "group": "navigation@1"
-        },
-        {
-          "command": "agentLoop.showPanel",
-          "when": "view == agentLoopExplorer",
-          "group": "navigation@2"
-        },
-        {
-          "command": "agentLoop.discoverModels",
-          "when": "view == agentLoopExplorer",
-          "group": "navigation@3"
-        },
-        {
-          "command": "agentLoop.refresh",
-          "when": "view == agentLoopExplorer",
-          "group": "navigation@4"
-        }
-      ]
-    },
-    "menus": {
       "view/item/context": [
         {
           "command": "agentLoop.deleteSession",
@@ -141,7 +117,10 @@
         },
         "agentLoop.cliProfile": {
           "type": "string",
-          "enum": ["opencode", "kilo"],
+          "enum": [
+            "opencode",
+            "kilo"
+          ],
           "default": "opencode",
           "description": "CLI profile determining command-line interface conventions (run args, model discovery). Auto-detected from cliBinary if unset."
         },
@@ -187,7 +166,8 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "typecheck": "tsc -p ./ --noEmit"
+    "typecheck": "tsc -p ./ --noEmit",
+    "package": "npm version patch --no-git-tag-version && vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

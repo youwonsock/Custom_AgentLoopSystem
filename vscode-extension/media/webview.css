@@ -185,7 +185,7 @@ html, body {
 
 .model-row {
   display: grid;
-  grid-template-columns: 90px 1fr;
+  grid-template-columns: 90px 1fr auto;
   gap: 8px;
   align-items: center;
 }
@@ -214,6 +214,11 @@ html, body {
   border-color: var(--accent);
 }
 
+.variant-select {
+  min-width: 80px;
+  max-width: 110px;
+}
+
 .model-row .model-select optgroup {
   font-style: normal;
   font-weight: 600;
@@ -222,7 +227,7 @@ html, body {
 
 .apply-all-row {
   display: grid;
-  grid-template-columns: 90px 1fr;
+  grid-template-columns: 90px 1fr auto;
   gap: 8px;
   align-items: center;
   margin-bottom: 8px;
@@ -250,6 +255,21 @@ html, body {
 
 .apply-all-select:focus {
   outline: 1px solid var(--accent);
+}
+
+.apply-all-row .variant-select {
+  background: var(--input-bg);
+  color: var(--input-fg);
+  border: 1px solid var(--input-border);
+  padding: 3px 6px;
+  border-radius: 2px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.apply-all-row .variant-select:focus {
+  outline: 1px solid var(--accent);
+  border-color: var(--accent);
 }
 
 .model-source {

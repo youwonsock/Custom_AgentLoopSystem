@@ -56,6 +56,8 @@ interface ModelMapping {
   interrupter: string;
 }
 
+type VariantMapping = Partial<Record<AgentRole, string>>;
+
 interface ErrorSignature {
   signature: string;
   rawMessage: string;
@@ -90,6 +92,7 @@ interface LoopState {
   idleTimeoutMs: number;
   cliBinary: string;
   cliProfile: string;
+  variantMapping: VariantMapping;
 }
 
 interface SessionMeta {
@@ -108,6 +111,7 @@ interface SessionRegistry {
   modelsDiscoveredCli: string | null;
   sessionMetas: SessionMeta[];
   manualModelsOverride: string[] | null;
+  modelVariants: Record<string, string[]> | null;
 }
 
 interface HandoffPayload {
@@ -183,6 +187,7 @@ interface SpawnCliOptions {
   cliBinary: string;
   cliProfile: CliProfile;
   phaseLabel: string;
+  variant?: string;
 }
 
 const SENTINEL = "[PHASE_DONE]";
@@ -218,7 +223,7 @@ interface CliProfile {
   name: string;
   defaultBinary: string;
   modelsArgs: string[];
-  buildRunArgs: (opts: { model: string; targetProjectPath: string; prompt: string }) => string[];
+  buildRunArgs: (opts: { model: string; targetProjectPath: string; prompt: string; variant?: string }) => string[];
   interactionWhitelist: string[];
 }
 
@@ -226,14 +231,18 @@ const OPENCODE_PROFILE: CliProfile = {
   name: "opencode",
   defaultBinary: "opencode",
   modelsArgs: ["models"],
-  buildRunArgs: (opts) => [
-    "run",
-    "--format", "json",
-    "--model", opts.model,
-    "--dir", opts.targetProjectPath,
-    "--dangerously-skip-permissions",
-    opts.prompt,
-  ],
+  buildRunArgs: (opts) => {
+    const args = [
+      "run",
+      "--format", "json",
+      "--model", opts.model,
+      "--dir", opts.targetProjectPath,
+      "--dangerously-skip-permissions",
+    ];
+    if (opts.variant) args.push("--variant", opts.variant);
+    args.push(opts.prompt);
+    return args;
+  },
   interactionWhitelist: INTERACTION_WHITELIST,
 };
 
@@ -241,15 +250,19 @@ const KILO_PROFILE: CliProfile = {
   name: "kilo",
   defaultBinary: "kilo",
   modelsArgs: ["models", "--pure"],
-  buildRunArgs: (opts) => [
-    "run",
-    "--auto",
-    "--pure",
-    "--format", "json",
-    "--model", opts.model,
-    "--dir", opts.targetProjectPath,
-    opts.prompt,
-  ],
+  buildRunArgs: (opts) => {
+    const args = [
+      "run",
+      "--auto",
+      "--pure",
+      "--format", "json",
+      "--model", opts.model,
+      "--dir", opts.targetProjectPath,
+    ];
+    if (opts.variant) args.push("--variant", opts.variant);
+    args.push(opts.prompt);
+    return args;
+  },
   interactionWhitelist: [
     ...INTERACTION_WHITELIST,
     "Action Required",
@@ -263,12 +276,21 @@ const CLI_PROFILES: Record<string, CliProfile> = {
   kilo: KILO_PROFILE,
 };
 
+const DEFAULT_PROVIDER_VARIANTS: Record<string, string[]> = {
+  anthropic: ["high", "max"],
+  openai: ["none", "minimal", "low", "medium", "high", "xhigh"],
+  google: ["low", "high"],
+  gemini: ["low", "high"],
+  opencode: ["none", "minimal", "low", "medium", "high", "xhigh"],
+  "opencode-go": ["none", "minimal", "low", "medium", "high", "xhigh"],
+  kilo: ["none", "minimal", "low", "medium", "high", "xhigh"],
+  deepseek: ["low", "medium", "high", "max"],
+};
+
 function resolveCliProfile(profileName: string | null, binaryName: string): CliProfile {
   const lower = binaryName.toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, "");
   if (profileName && CLI_PROFILES[profileName]) {
     const profile = CLI_PROFILES[profileName];
-    // If the binary is one of the known default names and doesn't match the requested
-    // profile's default binary, prefer the profile that matches the actual binary.
     if (lower !== profile.defaultBinary && lower !== profile.name && CLI_PROFILES[lower]) {
       return CLI_PROFILES[lower];
     }
@@ -278,6 +300,25 @@ function resolveCliProfile(profileName: string | null, binaryName: string): CliP
     return CLI_PROFILES[lower];
   }
   return OPENCODE_PROFILE;
+}
+
+function getModelVariants(modelId: string, registry?: SessionRegistry): string[] {
+  const slashIdx = modelId.indexOf("/");
+  const provider = slashIdx > 0 ? modelId.slice(0, slashIdx).toLowerCase() : "";
+  if (registry?.modelVariants?.[modelId]) {
+    return registry.modelVariants[modelId];
+  }
+  return DEFAULT_PROVIDER_VARIANTS[provider] ?? [];
+}
+
+async function loadModelVariantsConfig(rootDir: string): Promise<Record<string, string[]> | null> {
+  const cfgPath = path.join(rootDir, "model_variants.json");
+  try {
+    const raw = await fse.readFile(cfgPath, "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
 }
 
 const DEFAULT_MAX_ITERATIONS = 20;
@@ -479,6 +520,7 @@ function spawnCliPty(opts: SpawnCliOptions): SpawnHandle {
     model: opts.model,
     targetProjectPath: opts.targetProjectPath,
     prompt: opts.prompt,
+    variant: opts.variant,
   });
 
   const env: { [key: string]: string } = {};
@@ -1243,6 +1285,7 @@ class LoopOrchestrator {
 
   private async executeAgent(role: AgentRole, prompt: string): Promise<PtyRunResult> {
     const model = this.state.modelMapping[role];
+    const variant = this.state.variantMapping?.[role] || undefined;
     this.state.agentStates[role] = {
       status: "running",
       lastExitCode: null,
@@ -1250,7 +1293,7 @@ class LoopOrchestrator {
     };
     await this.saveState();
 
-    console.log(`\n[${this.state.sessionId}] Phase=${this.state.phase} Role=${role} Model=${model} Loop=${this.state.loopCount}`);
+    console.log(`\n[${this.state.sessionId}] Phase=${this.state.phase} Role=${role} Model=${model}${variant ? ` Variant=${variant}` : ""} Loop=${this.state.loopCount}`);
     console.log(`[${this.state.sessionId}] Prompt length: ${prompt.length} chars`);
 
     const handle = spawnCliPty({
@@ -1264,6 +1307,7 @@ class LoopOrchestrator {
       cliBinary: this.state.cliBinary,
       cliProfile: resolveCliProfile(this.state.cliProfile, this.state.cliBinary),
       phaseLabel: this.state.phase,
+      variant,
     });
 
     this.activePtyPid = handle.pid;
@@ -1430,6 +1474,7 @@ function createDefaultLoopState(
   goal: string,
   targetProjectPath: string,
   modelMapping: ModelMapping,
+  variantMapping: VariantMapping,
   cliBinary: string,
   cliProfile: string,
   maxIterations: number,
@@ -1454,6 +1499,7 @@ function createDefaultLoopState(
     goal,
     targetProjectPath: path.resolve(targetProjectPath),
     modelMapping,
+    variantMapping,
     errorQueue: [],
     agentStates,
     refinedGoal: null,
@@ -1492,6 +1538,22 @@ function resolveModelMapping(
   };
 }
 
+function resolveVariantMapping(parsed: Record<string, string>): VariantMapping {
+  const mapping: VariantMapping = {};
+  const roleToFlag: Record<string, AgentRole> = {
+    "planner-variant": "planner",
+    "implementer-variant": "implementer",
+    "tester-variant": "tester",
+    "qa-variant": "qa_lead",
+    "master-variant": "master",
+    "interrupter-variant": "interrupter",
+  };
+  for (const [flag, role] of Object.entries(roleToFlag)) {
+    if (parsed[flag]) mapping[role] = parsed[flag];
+  }
+  return mapping;
+}
+
 async function resolveRootDir(parsed: Record<string, string>): Promise<string> {
   if (parsed.root) return path.resolve(parsed.root);
   const scriptDir = path.dirname(process.argv[1]);
@@ -1517,6 +1579,7 @@ async function cmdInit(rootDir: string): Promise<void> {
     modelsDiscoveredCli: null,
     sessionMetas: [],
     manualModelsOverride: null,
+    modelVariants: null,
   };
   await atomicWriteJson(registryPath, registry);
   console.log(`Initialized agent-loop system at ${rootDir}`);
@@ -1536,6 +1599,8 @@ async function cmdModels(parsed: Record<string, string>, rootDir: string): Promi
     registry.availableModels = models;
     registry.modelsDiscoveredAt = new Date().toISOString();
     registry.modelsDiscoveredCli = `${cliBinary} (${profile.name})`;
+    const modelVariantsConfig = await loadModelVariantsConfig(rootDir);
+    registry.modelVariants = modelVariantsConfig ?? null;
     await atomicWriteJson(registryPath, registry);
   }
 
@@ -1607,10 +1672,17 @@ async function cmdRun(parsed: Record<string, string>, rootDir: string): Promise<
   const profileFallback = PROFILE_FALLBACKS[profile.name] ?? "anthropic/claude-sonnet-4-5";
   const fallbackModel = models.length > 0 ? models[0] : profileFallback;
   const modelMapping = resolveModelMapping(parsed, models, fallbackModel);
+  const variantMapping = resolveVariantMapping(parsed);
 
   console.log(`[orchestrator] Model mapping:`);
   for (const [role, model] of Object.entries(modelMapping)) {
-    console.log(`  ${role}: ${model}`);
+    const vrnt = variantMapping[role as AgentRole] || "(default)";
+    console.log(`  ${role}: ${model} (variant: ${vrnt})`);
+  }
+
+  const modelVariantsConfig = await loadModelVariantsConfig(rootDir);
+  if (modelVariantsConfig) {
+    reg.modelVariants = modelVariantsConfig;
   }
 
   const sessionId = generateSessionId();
@@ -1623,6 +1695,7 @@ async function cmdRun(parsed: Record<string, string>, rootDir: string): Promise<
     goal,
     targetProjectPath,
     modelMapping,
+    variantMapping,
     cliBinary,
     profile.name,
     maxIterations,
@@ -1686,6 +1759,7 @@ async function cmdResume(parsed: Record<string, string>, rootDir: string): Promi
   if (parsed.binary && parsed.binary !== "true") state.cliBinary = parsed.binary;
   if (parsed.profile && parsed.profile !== "true") state.cliProfile = parsed.profile;
   if (!state.cliProfile) state.cliProfile = resolveCliProfile(null, state.cliBinary).name;
+  state.variantMapping = state.variantMapping ?? resolveVariantMapping(parsed);
 
   if (state.status === LoopStatus.PAUSED) {
     state.status = LoopStatus.RUNNING;

@@ -2,13 +2,14 @@ import { ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { ExtensionConfig, ModelMapping, readExtensionConfig } from "./types";
+import { ExtensionConfig, ModelMapping, VariantMapping, readExtensionConfig } from "./types";
 import { StateStore } from "./stateStore";
 
 export interface NewSessionOptions {
   goal: string;
   targetProjectPath: string;
   modelMapping: Partial<ModelMapping>;
+  variantMapping?: Partial<VariantMapping>;
 }
 
 export interface LogEntry {
@@ -137,6 +138,13 @@ export class LoopClient {
     if (opts.modelMapping.qa_lead) args.push("--qa-model", opts.modelMapping.qa_lead);
     if (opts.modelMapping.master) args.push("--master-model", opts.modelMapping.master);
     if (opts.modelMapping.interrupter) args.push("--interrupter-model", opts.modelMapping.interrupter);
+
+    if (opts.variantMapping?.planner) args.push("--planner-variant", opts.variantMapping.planner);
+    if (opts.variantMapping?.implementer) args.push("--implementer-variant", opts.variantMapping.implementer);
+    if (opts.variantMapping?.tester) args.push("--tester-variant", opts.variantMapping.tester);
+    if (opts.variantMapping?.qa_lead) args.push("--qa-variant", opts.variantMapping.qa_lead);
+    if (opts.variantMapping?.master) args.push("--master-variant", opts.variantMapping.master);
+    if (opts.variantMapping?.interrupter) args.push("--interrupter-variant", opts.variantMapping.interrupter);
 
     return this.spawnSession(args, root);
   }
