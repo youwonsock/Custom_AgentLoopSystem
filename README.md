@@ -13,6 +13,7 @@
   - **opencode** — `npm install -g opencode` → 모델 탐색: `opencode models`
   - **kilo** — `npm install -g @kilocode/cli` → 모델 탐색: `kilo models`
 - 운영체제: Windows / macOS / Linux (Windows는 `useConpty`, PATHEXT 기반 바이너리 해석 적용).
+- `node-pty` prebuild `spawn-helper` 바이너리(macOS/Linux) 실행 권한 필요. `npm install` 시 자동으로 `postinstall` 스크립트(`scripts/fix-pty-permissions.js`)가 권한을 수정합니다.
 
 ### 의존성 (Core 엔진)
 - `fs-extra` — 원자적 파일 쓰기/디렉터리 보장.
@@ -124,6 +125,50 @@ kilo run --auto --format json --model <지정모델명> --dir <targetProjectPath
 
 > 참고: 이전 버전의 쉘 테스트 명령(`npm test`) 실행 기반 검증과 포트 좀비 세정(`cleanPorts`) 기능은 제거되었습니다. 테스트는 이제 테스터 에이전트가 구현 내용을 기반으로 **AI가 직접 수행**합니다.
 
+### 4.6 모델 Variant(Thinking Level) 시스템
+
+각 모델에 대해 **thinking level**(variant)을 지정할 수 있습니다. variant는 `--variant <level>` 형태로 CLI에 전달되어 사고 깊이/리소스 사용량을 제어합니다.
+
+#### 공급자별 기본 Variant
+
+| 공급자 | 지원 Variant |
+|--------|-------------|
+| anthropic | `high`, `max` |
+| openai | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` |
+| google / gemini | `low`, `high` |
+| opencode / opencode-go / kilo | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` |
+| deepseek | `low`, `medium`, `high`, `max` |
+
+#### 사용자 정의 Variant (`model_variants.json`)
+
+Core 루트 디렉터리에 `model_variants.json` 파일을 배치하면 공급자별 기본값을 **모델 ID 단위**로 오버라이드할 수 있습니다:
+
+```json
+{
+  "anthropic/claude-sonnet-4-5": ["low", "medium", "high", "xhigh", "max"],
+  "openai/gpt-4o": ["low", "high"]
+}
+```
+
+#### UI 적용 방식 (VS Code 확장)
+
+웹뷰의 **Model Mapping** 그리드에서:
+- 각 에이전트 역할별 variant 드롭다운 제공 (현재 선택된 모델에 맞는 variant 목록 자동 갱신)
+- **"Apply to all"** variant 드롭다운: 일괄 선택 시 모든 역할에 동일 variant 전파
+- 모델 선택 변경 시 기존 variant 선택값을 index 기반으로 보존(`mapVariantByIndex()`)
+
+#### CLI 적용 방식
+
+```bash
+node dist/loop_orchestrator.js run \
+  --goal "..." --target ./my-project \
+  --planner-variant xhigh \
+  --implementer-variant high \
+  --tester-variant medium
+```
+
+variant 플래그는 resume 시에도 유지되며, 미지정 시 CLI 기본값(없음)을 사용합니다.
+
 ---
 
 ## 5. 파이프라인 설계 (중앙 제어 루프)
@@ -187,7 +232,7 @@ node dist/loop_orchestrator.js init
 # 가용 모델 탐색 (프로파일 지정 가능)
 node dist/loop_orchestrator.js models [--binary opencode|kilo] [--profile opencode|kilo] [--root <path>]
 
-# 새 세션 실행 (opencode)
+# 새 세션 실행 (opencode, variant 포함)
 node dist/loop_orchestrator.js run \
   --goal "Add JWT auth to the Express app" \
   --target ./my-project \
@@ -196,9 +241,12 @@ node dist/loop_orchestrator.js run \
   --max-iterations 20 \
   --phase-timeout 600000 \
   --idle-timeout 90000 \
-  [--planner-model <m>] [--implementer-model <m>] \
-  [--tester-model <m>] [--qa-model <m>] \
-  [--master-model <m>] [--interrupter-model <m>]
+  [--planner-model <m>] [--planner-variant <v>] \
+  [--implementer-model <m>] [--implementer-variant <v>] \
+  [--tester-model <m>] [--tester-variant <v>] \
+  [--qa-model <m>] [--qa-variant <v>] \
+  [--master-model <m>] [--master-variant <v>] \
+  [--interrupter-model <m>] [--interrupter-variant <v>]
 
 # 새 세션 실행 (kilo)
 node dist/loop_orchestrator.js run \
@@ -206,7 +254,7 @@ node dist/loop_orchestrator.js run \
   --target ./my-project \
   --binary kilo \
   --profile kilo \
-  [--planner-model <m>] ...
+  [--planner-model <m>] [--planner-variant <v>] ...
 
 # 일시정지된 세션 재개
 node dist/loop_orchestrator.js resume --session <sessionId> [--root <path>] [--binary <name>] [--profile <name>]
@@ -235,12 +283,18 @@ code --install-extension agent-loop-vscode-<ver>.vsix --force
 - **웹뷰 컨트롤 패널**: Kilo Code 스타일 하단 composer(goal textarea + target 경로 + **CLI 프로파일 드롭박스** + Start Session), 상단 툴바(세션 선택/Resume/Stop/Models/Notes), 메인 그리드(Status / Model Mapping / Progress Notes / Loop History / Live Log Stream).
 - **CLI 프로파일 선택**: composer에서 `opencode`/`kilo` 프로파일 선택. 세션 시작 시 VS Code 설정에 자동 저장.
 - **모델 드롭다운**: 공급자별 `<optgroup>` 그룹화, 역할별(Planner/Implementer/Tester/QA Lead/Master/Interrupter) 모델 지정 + **"Apply to all" 일괄 설정 드롭박스**.
+- **Variant(Thinking Level) 드롭다운**: 각 에이전트 역할별 variant 선택 + **"Apply to all" 일괄 variant 전파**. 선택된 모델에 따라 variant 목록 자동 갱신. 모델 변경 시 기존 variant를 index 기반으로 보존.
+- **세션 삭제**: 세션 목록에서 `Delete Session`으로 세션 파일, 디렉터리, 레지스트리 항목 완전 제거.
 - **드롭다운 자동 닫힘 방지**: 폴링 기반 재렌더 시 상호작용 가드 + 상태 시그니처 스킵으로 열려 있는 `<select>`가 파괴되지 않음.
 - **Compose 모드**: "New Session" 클릭 시 기존 세션 유무와 무관하게 composer 뷰 고정(ESC/Cancel로 취소).
 - **실시간 로그 스트리밍**: Core 자식 프로세스 stdout/stderr를 가로채 패널에 출력.
 - **설정(`agentLoop.*`)**: `cliBinary`, `cliProfile`(`opencode`|`kilo`), `rootDir`, `nodeBinary`, `orchestratorScript`, `maxIterations`, `phaseTimeoutMs`, `idleTimeoutMs`, `pollIntervalMs`.
 
 > 참고: 테스트 명령(`testCommand`)과 포트 세정(`portsToClean`) 설정은 AI 주도 테스트 전환에 따라 제거되었습니다.
+
+### 현재 버전
+- **VS Code 확장**: `2.0.5`
+- **Core 엔진**: `1.0.0`
 
 ---
 

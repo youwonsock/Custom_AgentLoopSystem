@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tetris</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="game-container">
+    <div id="left-panel">
+      <canvas id="board" width="300" height="600"></canvas>
+    </div>
+    <div id="right-panel">
+      <div id="next-section">
+        <h3>NEXT</h3>
+        <canvas id="next" width="120" height="120"></canvas>
+      </div>
+      <div id="score-section">
+        <div class="stat">
+          <span class="label">SCORE</span>
+          <span id="score" class="value">0</span>
+        </div>
+        <div class="stat">
+          <span class="label">LEVEL</span>
+          <span id="level" class="value">1</span>
+        </div>
+        <div class="stat">
+          <span class="label">LINES</span>
+          <span id="lines" class="value">0</span>
+        </div>
+      </div>
+      <div id="controls-section">
+        <h3>CONTROLS</h3>
+        <div class="control-row"><kbd>&larr;</kbd><kbd>&rarr;</kbd> Move</div>
+        <div class="control-row"><kbd>&darr;</kbd> Soft drop</div>
+        <div class="control-row"><kbd>&uarr;</kbd> Rotate</div>
+        <div class="control-row"><kbd>Space</kbd> Hard drop</div>
+        <div class="control-row"><kbd>P</kbd> Pause</div>
+      </div>
+      <button id="restart-btn">RESTART</button>
+    </div>
+  </div>
+  <div id="game-over-overlay" class="hidden">
+    <div id="game-over-content">
+      <h1>GAME OVER</h1>
+      <p>Score: <span id="final-score">0</span></p>
+      <button id="restart-overlay-btn">PLAY AGAIN</button>
+    </div>
+  </div>
+  <div id="pause-overlay" class="hidden">
+    <div id="pause-content">
+      <h1>PAUSED</h1>
+      <p>Press <kbd>P</kbd> to resume</p>
+    </div>
+  </div>
+  <script src="tetris.js"></script>
+</body>
+</html>
