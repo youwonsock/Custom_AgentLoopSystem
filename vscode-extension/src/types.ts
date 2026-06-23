@@ -57,6 +57,8 @@ export interface LoopState {
   interruptMessage?: string | null;
   interruptBriefing?: string | null;
   lastFailureDigest?: string | null;
+  planRevisionPending?: boolean;
+  interruptedFromPhase?: Phase | null;
 }
 
 export interface PlanChoice {
@@ -153,6 +155,7 @@ export interface PlanReviewStatePayload {
   isPaused: boolean;
   phase: Phase | null;
   interruptBriefing: string | null;
+  planRevisionPending: boolean;
   sessions: PlanReviewSessionInfo[];
 }
 

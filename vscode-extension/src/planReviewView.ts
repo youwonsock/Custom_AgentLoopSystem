@@ -136,6 +136,7 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
       isPaused: state?.status === "PAUSED",
       phase: state?.phase ?? null,
       interruptBriefing: state?.interruptBriefing ?? null,
+      planRevisionPending: state?.planRevisionPending ?? false,
       sessions,
     };
 
@@ -143,7 +144,7 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
   }
 
   private emptyPayload(sessions: PlanReviewSessionInfo[] = []): PlanReviewStatePayload {
-    return { sessionId: "", awaitingPlanApproval: false, planApproved: false, choices: null, planMd: null, isPaused: false, phase: null, interruptBriefing: null, sessions };
+    return { sessionId: "", awaitingPlanApproval: false, planApproved: false, choices: null, planMd: null, isPaused: false, phase: null, interruptBriefing: null, planRevisionPending: false, sessions };
   }
 
   private postMessage(msg: unknown): void {
@@ -342,6 +343,20 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
     .badge.attention { background: var(--vscode-statusBarItemErrorBackground, #c33); color: var(--vscode-statusBarItemErrorForeground, #fff); }
     .badge.paused { background: var(--vscode-statusBarItemWarningBackground, #a80); color: var(--vscode-statusBarItemWarningForeground, #fff); }
     .badge.running { background: var(--vscode-statusBarItemProminentBackground, #06c); color: var(--vscode-statusBarItemProminentForeground, #fff); }
+    .plan-revised-badge {
+      font-size: 11px;
+      color: var(--vscode-inputValidation-warningBorder, #a80);
+      margin-bottom: 8px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: var(--vscode-inputValidation-warningBackground, rgba(170,136,0,0.1));
+    }
+    .field-label {
+      display: block;
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+      margin: 6px 0 2px;
+    }
     .interrupt-briefing {
       border: 1px solid var(--vscode-inputValidation-warningBorder, #a80);
       border-radius: 4px;
@@ -363,9 +378,10 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
   </div>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    let state = ${JSON.stringify({ sessionId: null, awaitingPlanApproval: false, planApproved: false, choices: null, planMd: null, isPaused: false, phase: null, interruptBriefing: null, sessions: [] })};
+    let state = ${JSON.stringify({ sessionId: null, awaitingPlanApproval: false, planApproved: false, choices: null, planMd: null, isPaused: false, phase: null, interruptBriefing: null, planRevisionPending: false, sessions: [] })};
     let reviseBusy = false;
     let chatDraft = "";
+    let interruptDraft = "";
     let lastSessionId = null;
     let isInteracting = false;
     let renderQueued = false;
@@ -384,6 +400,7 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
         planLen: (s.planMd || "").length,
         planHead: (s.planMd || "").slice(0, 200),
         interruptLen: (s.interruptBriefing || "").length,
+        planRevisionPending: s.planRevisionPending,
         choicesLen: (s.choices || []).length,
         sessions: (s.sessions || []).map(function(x) {
           return [x.sessionId, x.status, x.awaitingPlanApproval, x.phase];
@@ -462,6 +479,7 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
         var payload = msg.payload;
         if (lastSessionId !== null && lastSessionId !== payload.sessionId) {
           chatDraft = "";
+          interruptDraft = "";
         }
         lastSessionId = payload.sessionId || null;
         var newSig = stateSignature(payload);
@@ -559,25 +577,59 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
     }
 
     function renderInterrupt() {
+      var planBadge = state.planRevisionPending
+        ? '<p class="plan-revised-badge">Plan revised \u2014 resume will re-implement from IMPLEMENTATION.</p>'
+        : '';
+      var planSection = (state.planMd && state.planMd.trim().length > 0)
+        ? '<h4>Current Plan</h4><div class="plan-preview">' + escapeHtml(state.planMd) + '</div>'
+        : '';
       return '<h3>\u26a0 Interrupt \u2014 Action Required</h3>' +
         '<div class="interrupt-briefing">' + escapeHtml(state.interruptBriefing || "") + '</div>' +
-        '<div class="chat-area"><textarea id="chat-input" placeholder="Send a message to the interrupter before resuming... (Ctrl+Enter to send)"></textarea>' +
+        planBadge + planSection +
+        '<div class="chat-area"><label class="field-label">Revise plan</label>' +
+        '<textarea id="chat-input" placeholder="Request plan changes... (Ctrl+Enter to send)"></textarea>' +
+        '<label class="field-label">Operator message (optional)</label>' +
+        '<textarea id="interrupt-input" placeholder="Send a message to the interrupter... (Ctrl+Enter to send)"></textarea>' +
         '<div class="btn-row">' +
-          '<button id="btn-revise" ' + (reviseBusy ? 'disabled' : '') + '>' + (reviseBusy ? '<span class="spinner"></span> Sending...' : 'Send Message') + '</button>' +
+          '<button id="btn-revise-plan" ' + (reviseBusy ? 'disabled' : '') + '>' + (reviseBusy ? '<span class="spinner"></span> Revising...' : 'Revise Plan') + '</button>' +
+          '<button id="btn-send-interrupt" ' + (reviseBusy ? 'disabled' : '') + '>Send Message</button>' +
           '<button class="primary" id="btn-resume" ' + (reviseBusy ? 'disabled' : '') + '>Resume</button>' +
         '</div></div>';
     }
 
-    function bindInterrupt() {
-      const textarea = document.getElementById("chat-input");
-      const btnRevise = document.getElementById("btn-revise");
-      const btnResume = document.getElementById("btn-resume");
+    function bindInterruptTextarea(el, draftKey) {
+      if (!el) return;
+      el.value = draftKey === "interrupt" ? interruptDraft : chatDraft;
+      el.oninput = function(e) {
+        if (draftKey === "interrupt") interruptDraft = e.target.value;
+        else chatDraft = e.target.value;
+      };
+    }
 
-      function sendMessage() {
-        if (!textarea || reviseBusy) return;
-        var msg = textarea.value.trim();
+    function bindInterrupt() {
+      var planTextarea = document.getElementById("chat-input");
+      var interruptTextarea = document.getElementById("interrupt-input");
+      var btnRevisePlan = document.getElementById("btn-revise-plan");
+      var btnSendInterrupt = document.getElementById("btn-send-interrupt");
+      var btnResume = document.getElementById("btn-resume");
+
+      function sendRevisePlan() {
+        if (!planTextarea || reviseBusy) return;
+        var msg = planTextarea.value.trim();
         if (!msg) return;
         chatDraft = "";
+        reviseBusy = true;
+        startReviseBusyTimer();
+        lastStateSig = stateSignature();
+        render();
+        vscode.postMessage({ command: "revisePlan", sessionId: state.sessionId, message: msg });
+      }
+
+      function sendInterruptMessage() {
+        if (!interruptTextarea || reviseBusy) return;
+        var msg = interruptTextarea.value.trim();
+        if (!msg) return;
+        interruptDraft = "";
         reviseBusy = true;
         startReviseBusyTimer();
         lastStateSig = stateSignature();
@@ -585,16 +637,26 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
         vscode.postMessage({ command: "interruptSession", sessionId: state.sessionId, message: msg });
       }
 
-      bindChatTextarea(textarea);
-      if (textarea) {
-        textarea.onkeydown = function(e) {
+      bindInterruptTextarea(planTextarea, "plan");
+      bindInterruptTextarea(interruptTextarea, "interrupt");
+      if (planTextarea) {
+        planTextarea.onkeydown = function(e) {
           if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
             e.preventDefault();
-            sendMessage();
+            sendRevisePlan();
           }
         };
       }
-      if (btnRevise) btnRevise.onclick = sendMessage;
+      if (interruptTextarea) {
+        interruptTextarea.onkeydown = function(e) {
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            sendInterruptMessage();
+          }
+        };
+      }
+      if (btnRevisePlan) btnRevisePlan.onclick = sendRevisePlan;
+      if (btnSendInterrupt) btnSendInterrupt.onclick = sendInterruptMessage;
       if (btnResume) btnResume.onclick = function() {
         vscode.postMessage({ command: "resumeSession", sessionId: state.sessionId });
       };

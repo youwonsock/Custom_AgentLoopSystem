@@ -120,6 +120,8 @@ interface LoopState {
   lastFailureDigest: string | null;
   interruptMessage?: string;
   interruptBriefing?: string | null;
+  planRevisionPending?: boolean;
+  interruptedFromPhase?: Phase | null;
 }
 
 interface PlanChoice {
@@ -317,6 +319,7 @@ interface HandoffPayload {
   phase: Phase;
   loopCount: number;
   interruptMessage?: string;
+  planRevised?: boolean;
 }
 
 interface AgentSkills {
@@ -1358,6 +1361,14 @@ function buildPrompt(role: AgentRole, payload: HandoffPayload): string {
     lines.push("Address their specific concerns in your briefing.");
     lines.push("");
   }
+  if (payload.planRevised) {
+    lines.push("=== PLAN REVISION — RE-IMPLEMENTATION REQUIRED ===");
+    lines.push("The operator revised the plan while the session was paused or interrupted.");
+    lines.push("Review ALL existing changes in the target project.");
+    lines.push("Update the implementation to match the REVISED goal/plan above.");
+    lines.push("Do not assume the previous implementation still matches the plan.");
+    lines.push("");
+  }
   lines.push("=== ENFORCED RULES (do NOT violate) ===");
   for (const rule of skills.enforcedRules) {
     lines.push(`- ${rule}`);
@@ -1458,6 +1469,13 @@ class LoopOrchestrator {
     this.sessionDir = path.join(rootDir, cfg.sessionsRoot, state.sessionId);
   }
 
+  private enterInterruptPhase(): void {
+    if (this.state.phase !== Phase.INTERRUPT) {
+      this.state.interruptedFromPhase = this.state.phase;
+    }
+    this.state.phase = Phase.INTERRUPT;
+  }
+
   async run(): Promise<void> {
     this.registerSignalHandlers();
 
@@ -1468,7 +1486,7 @@ class LoopOrchestrator {
         if (msg.trim().length > 0) {
           await fse.remove(interruptPath);
           this.state.interruptMessage = msg.trim();
-          this.state.phase = Phase.INTERRUPT;
+          this.enterInterruptPhase();
           await this.appendProgressNote(
             `[Loop ${this.state.loopCount}] INTERRUPT: Human operator message: "${msg.trim()}"`
           );
@@ -1554,7 +1572,7 @@ class LoopOrchestrator {
 
         if (oscResult.oscillation) {
           console.warn(`[orchestrator] Oscillation detected. Entering INTERRUPT phase.`);
-          this.state.phase = Phase.INTERRUPT;
+          this.enterInterruptPhase();
           await this.saveState();
           await this.saveRegistry();
         } else {
@@ -1612,6 +1630,7 @@ class LoopOrchestrator {
   }
 
   private async runImplementation(failureDigest: string | null): Promise<void> {
+    const planRevised = !!this.state.planRevisionPending;
     this.state.loopCount++;
     await this.saveState();
 
@@ -1624,6 +1643,7 @@ class LoopOrchestrator {
       failureDigest,
       phase: Phase.IMPLEMENTATION,
       loopCount: this.state.loopCount,
+      planRevised,
     };
 
     const prompt = buildPrompt("implementer", payload);
@@ -1637,7 +1657,14 @@ class LoopOrchestrator {
       throw new Error(`Implementer exited with code ${result.exitCode}: ${extractOutput(result).slice(0, 200)}`);
     }
 
-    await this.appendProgressNote(`[Loop ${this.state.loopCount}] IMPLEMENTATION: Code changes applied.`);
+    if (planRevised) {
+      this.state.planRevisionPending = false;
+      await this.appendProgressNote(
+        `[Loop ${this.state.loopCount}] IMPLEMENTATION: Code re-implemented after plan revision.`
+      );
+    } else {
+      await this.appendProgressNote(`[Loop ${this.state.loopCount}] IMPLEMENTATION: Code changes applied.`);
+    }
     this.state.phase = Phase.TEST_GENERATION;
   }
 
@@ -1727,7 +1754,7 @@ class LoopOrchestrator {
 
     if (oscResult.oscillation) {
       await this.appendProgressNote(`[Loop ${this.state.loopCount}] VERIFICATION: FAILED. Oscillation detected. Entering INTERRUPT.`);
-      this.state.phase = Phase.INTERRUPT;
+      this.enterInterruptPhase();
       return;
     }
 
@@ -1781,7 +1808,7 @@ class LoopOrchestrator {
       const rejectOsc = pushAndCheckOscillation(this.state.errorQueue, rejectEntry);
       this.state.errorQueue = rejectOsc.queue;
       if (rejectOsc.oscillation) {
-        this.state.phase = Phase.INTERRUPT;
+        this.enterInterruptPhase();
       } else {
         this.state.phase = Phase.IMPLEMENTATION;
       }
@@ -2076,6 +2103,8 @@ function createDefaultLoopState(
     planPath: null,
     lastFailureDigest: null,
     interruptBriefing: null,
+    planRevisionPending: false,
+    interruptedFromPhase: null,
     createdAt: now,
     updatedAt: now,
     maxIterations,
@@ -2367,8 +2396,16 @@ async function cmdResume(parsed: Record<string, string>, rootDir: string): Promi
         if (plan.trim().length > 0) state.refinedGoal = plan.trim();
       } catch { /* keep existing refinedGoal */ }
     }
-    if (state.phase === Phase.INTERRUPT) {
+
+    if (state.planRevisionPending) {
       state.phase = Phase.IMPLEMENTATION;
+      state.interruptBriefing = null;
+      state.interruptMessage = undefined;
+      state.interruptedFromPhase = null;
+      state.lastFailureDigest = null;
+    } else if (state.phase === Phase.INTERRUPT) {
+      state.phase = state.interruptedFromPhase ?? Phase.IMPLEMENTATION;
+      state.interruptedFromPhase = null;
       state.interruptBriefing = null;
     }
   }
@@ -2473,9 +2510,20 @@ Output the full revised plan as markdown only. Do not include the original promp
   const output = extractOutput(result);
   await fse.writeFile(planPath, output, "utf8");
 
-  if (!state.planPath) {
+  if (result.exitCode === 0) {
+    const revised = output.trim();
     state.planPath = planPath;
+    state.refinedGoal = revised;
+    if (state.planningComplete) {
+      state.planRevisionPending = true;
+    }
+    state.updatedAt = new Date().toISOString();
     await atomicWriteJson(statePath, state);
+    const notesPath = path.join(sessionDir, loopConfig.paths.sessionFileNames.progressNotes);
+    await atomicAppendLine(
+      notesPath,
+      `[Loop ${state.loopCount}] PLAN_REVISION: Plan revised by operator. Re-implementation required on resume.`
+    );
   }
 
   console.log(output);
