@@ -5,6 +5,7 @@ import * as vscode from "vscode";
 import {
   ExtensionConfig,
   LoopState,
+  LoopStatus,
   SessionBundle,
   SessionRegistry,
   LoopHistoryEntry,
@@ -282,6 +283,36 @@ export class StateStore {
       createdAt: state.createdAt,
     });
     return true;
+  }
+
+  async syncRegistrySessionStatus(sessionId: string, status: LoopStatus): Promise<void> {
+    const state = await this.readState(sessionId);
+    const registry = await this.readRegistry();
+    const existing = registry.sessionMetas.find((m) => m.sessionId === sessionId);
+    await this.mergeSessionMetaStatus(sessionId, {
+      status,
+      goal: state?.goal ?? existing?.goal ?? "",
+      targetProjectPath: state?.targetProjectPath ?? existing?.targetProjectPath ?? "",
+      createdAt: state?.createdAt ?? existing?.createdAt ?? new Date().toISOString(),
+    });
+  }
+
+  async resolveSessionDisplayStatus(
+    sessionId: string,
+    registryStatus: LoopStatus,
+    isProcessRunning: boolean
+  ): Promise<LoopStatus> {
+    if (isProcessRunning) {
+      return "RUNNING";
+    }
+    if (registryStatus === "RUNNING") {
+      return "RUNNING";
+    }
+    const state = await this.readState(sessionId);
+    if (state?.status) {
+      return state.status;
+    }
+    return registryStatus;
   }
 
   private async mergeSessionMetaStatus(

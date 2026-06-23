@@ -25,7 +25,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   store.startPolling(config.pollIntervalMs);
 
-  const sessionExplorerProvider = new SessionExplorerProvider(store);
+  const sessionExplorerProvider = new SessionExplorerProvider(store, client);
 
   const updateNoSessionsContext = async () => {
     try {
@@ -122,7 +122,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!picked) return;
       const panel = LoopWebviewPanel.getInstance(context, store!, client!, config);
       await panel.requestStopSession(picked.sessionId);
-      vscode.window.showInformationMessage(`Agent Loop: Stopping session ${picked.sessionId}…`);
+      vscode.window.showInformationMessage(`Agent Loop: Terminating session ${picked.sessionId}…`);
     }),
 
     vscode.commands.registerCommand("agentLoop.deleteSession", async (arg?: { sessionId?: string }) => {
@@ -229,7 +229,10 @@ class SessionExplorerProvider implements vscode.TreeDataProvider<SessionNode> {
   private readonly emitter = new vscode.EventEmitter<SessionNode | undefined | null>();
   readonly onDidChangeTreeData = this.emitter.event;
 
-  constructor(private readonly store: StateStore) {
+  constructor(
+    private readonly store: StateStore,
+    private readonly client: LoopClient
+  ) {
     this.store.onChange(() => this.refresh());
   }
 
@@ -246,11 +249,17 @@ class SessionExplorerProvider implements vscode.TreeDataProvider<SessionNode> {
       return [];
     }
     const registry = await this.store.readRegistry();
-    return registry.sessionMetas.map(
-      (m) =>
+    const nodes: SessionNode[] = [];
+    for (const m of registry.sessionMetas) {
+      const displayStatus = await this.store.resolveSessionDisplayStatus(
+        m.sessionId,
+        m.status,
+        this.client.isRunning(m.sessionId)
+      );
+      nodes.push(
         new SessionNode(
           m.sessionId,
-          m.status,
+          displayStatus,
           m.goal,
           vscode.TreeItemCollapsibleState.None,
           {
@@ -259,7 +268,9 @@ class SessionExplorerProvider implements vscode.TreeDataProvider<SessionNode> {
             arguments: [m.sessionId],
           }
         )
-    );
+      );
+    }
+    return nodes;
   }
 }
 

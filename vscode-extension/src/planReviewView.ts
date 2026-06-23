@@ -196,7 +196,6 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
       case "revisePlan": {
         const sessionId = msg.sessionId;
         if (!sessionId || !msg.message) return;
-        await this.pushState();
         vscode.window.showInformationMessage(`Revising plan for ${sessionId}...`);
         const result = await this.client.revisePlan(sessionId, msg.message);
         if (result.exitCode === 0) {
@@ -366,12 +365,112 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
     const vscode = acquireVsCodeApi();
     let state = ${JSON.stringify({ sessionId: null, awaitingPlanApproval: false, planApproved: false, choices: null, planMd: null, isPaused: false, phase: null, interruptBriefing: null, sessions: [] })};
     let reviseBusy = false;
+    let chatDraft = "";
+    let lastSessionId = null;
+    let isInteracting = false;
+    let renderQueued = false;
+    let deferredRenderTimer = null;
+    let lastStateSig = "";
+    let reviseBusyTimer = null;
 
-    window.addEventListener("message", (event) => {
-      const msg = event.data;
+    function stateSignature(s) {
+      s = s || state;
+      return JSON.stringify({
+        sessionId: s.sessionId,
+        awaitingPlanApproval: s.awaitingPlanApproval,
+        planApproved: s.planApproved,
+        isPaused: s.isPaused,
+        phase: s.phase,
+        planLen: (s.planMd || "").length,
+        planHead: (s.planMd || "").slice(0, 200),
+        interruptLen: (s.interruptBriefing || "").length,
+        choicesLen: (s.choices || []).length,
+        sessions: (s.sessions || []).map(function(x) {
+          return [x.sessionId, x.status, x.awaitingPlanApproval, x.phase];
+        }),
+      });
+    }
+
+    function setupInteractionGuard() {
+      document.addEventListener("focusin", function(e) {
+        var t = e.target;
+        if (t && (t.tagName === "SELECT" || t.tagName === "INPUT" || t.tagName === "TEXTAREA")) {
+          isInteracting = true;
+        }
+      });
+      document.addEventListener("focusout", function(e) {
+        var t = e.target;
+        if (t && (t.tagName === "SELECT" || t.tagName === "INPUT" || t.tagName === "TEXTAREA")) {
+          isInteracting = false;
+          if (renderQueued) {
+            if (deferredRenderTimer) { clearTimeout(deferredRenderTimer); deferredRenderTimer = null; }
+            renderQueued = false;
+            tryRender();
+          }
+        }
+      });
+    }
+
+    function tryRender() {
+      var sig = stateSignature();
+      if (sig === lastStateSig) return;
+      lastStateSig = sig;
+      render();
+    }
+
+    function requestRender() {
+      if (isInteracting) {
+        renderQueued = true;
+        if (!deferredRenderTimer) {
+          deferredRenderTimer = setTimeout(function() {
+            deferredRenderTimer = null;
+            if (renderQueued) {
+              renderQueued = false;
+              tryRender();
+            }
+          }, 3000);
+        }
+        return;
+      }
+      tryRender();
+    }
+
+    function bindChatTextarea(textarea) {
+      if (!textarea) return;
+      textarea.value = chatDraft;
+      textarea.oninput = function(e) { chatDraft = e.target.value; };
+    }
+
+    function clearReviseBusyTimer() {
+      if (reviseBusyTimer) { clearTimeout(reviseBusyTimer); reviseBusyTimer = null; }
+    }
+
+    function startReviseBusyTimer() {
+      clearReviseBusyTimer();
+      reviseBusyTimer = setTimeout(function() {
+        reviseBusyTimer = null;
+        if (reviseBusy) {
+          reviseBusy = false;
+          requestRender();
+        }
+      }, 120000);
+    }
+
+    window.addEventListener("message", function(event) {
+      var msg = event.data;
       if (msg.command === "stateUpdate") {
-        state = msg.payload;
-        render();
+        var payload = msg.payload;
+        if (lastSessionId !== null && lastSessionId !== payload.sessionId) {
+          chatDraft = "";
+        }
+        lastSessionId = payload.sessionId || null;
+        var newSig = stateSignature(payload);
+        if (reviseBusy && newSig !== lastStateSig) {
+          reviseBusy = false;
+          clearReviseBusyTimer();
+        }
+        state = payload;
+        requestRender();
       }
     });
 
@@ -439,9 +538,10 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
     }
 
     function bindSessionSelector() {
-      const sel = document.getElementById("session-select");
+      var sel = document.getElementById("session-select");
       if (sel) {
         sel.onchange = function() {
+          chatDraft = "";
           vscode.postMessage({ command: "selectSession", sessionId: sel.value });
         };
       }
@@ -475,14 +575,17 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
 
       function sendMessage() {
         if (!textarea || reviseBusy) return;
-        const msg = textarea.value.trim();
+        var msg = textarea.value.trim();
         if (!msg) return;
+        chatDraft = "";
         reviseBusy = true;
+        startReviseBusyTimer();
+        lastStateSig = stateSignature();
         render();
         vscode.postMessage({ command: "interruptSession", sessionId: state.sessionId, message: msg });
-        textarea.value = "";
       }
 
+      bindChatTextarea(textarea);
       if (textarea) {
         textarea.onkeydown = function(e) {
           if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
@@ -527,14 +630,17 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
 
       function sendRevise() {
         if (!textarea || reviseBusy) return;
-        const msg = textarea.value.trim();
+        var msg = textarea.value.trim();
         if (!msg) return;
+        chatDraft = "";
         reviseBusy = true;
+        startReviseBusyTimer();
+        lastStateSig = stateSignature();
         render();
         vscode.postMessage({ command: "revisePlan", sessionId: state.sessionId, message: msg });
-        textarea.value = "";
       }
 
+      bindChatTextarea(textarea);
       if (textarea) {
         textarea.onkeydown = function(e) {
           if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
@@ -562,6 +668,7 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
       }
     });
 
+    setupInteractionGuard();
     vscode.postMessage({ command: "requestPlanReviewState" });
   </script>
 </body>

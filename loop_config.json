@@ -33,7 +33,7 @@
     "cliBinary": "opencode",
     "maxIterations": 20,
     "phaseTimeoutMs": 600000,
-    "idleTimeoutMs": 90000,
+    "idleTimeoutMs": 600000,
     "ptyCols": 100000,
     "ptyRows": 50,
     "profileFallbackModels": {

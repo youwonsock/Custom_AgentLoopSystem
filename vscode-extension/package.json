@@ -2,7 +2,7 @@
   "name": "agent-loop-vscode",
   "displayName": "Agent Loop Orchestrator",
   "description": "VS Code extension that controls the Custom Agent Loop System CLI to autonomously achieve coding goals via a multi-model multi-session orchestrator.",
-  "version": "3.0.8",
+  "version": "3.0.10",
   "publisher": "custom-agent-loop",
   "license": "MIT",
   "repository": {
@@ -163,7 +163,7 @@
         },
         "agentLoop.idleTimeoutMs": {
           "type": "number",
-          "default": 90000,
+          "default": 600000,
           "description": "Idle timeout in milliseconds."
         },
         "agentLoop.pollIntervalMs": {

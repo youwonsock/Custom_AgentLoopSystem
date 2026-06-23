@@ -25,7 +25,7 @@ VS Code extension that controls the Custom Agent Loop System CLI to autonomously
 - `agentLoop.testCommand`: Default test command (default `npm test`)
 - `agentLoop.maxIterations`: Max loop iterations (default 20)
 - `agentLoop.phaseTimeoutMs`: Phase timeout (default 600000)
-- `agentLoop.idleTimeoutMs`: Idle timeout (default 90000)
+- `agentLoop.idleTimeoutMs`: Idle timeout (default 600000)
 - `agentLoop.portsToClean`: Ports to clean before tests
 - `agentLoop.pollIntervalMs`: State polling interval (default 1000)
 

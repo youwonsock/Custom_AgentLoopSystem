@@ -285,7 +285,7 @@
     const isStopping = stoppingSessionId === state.selectedSessionId;
     const st = state.state;
     const badgeClass = isStopping ? "stopping" : (st ? st.status.toLowerCase() : "");
-    const badgeText = isStopping ? "STOPPING" : (st ? st.status : "NONE");
+    const badgeText = isStopping ? "TERMINATING" : (st ? st.status : "NONE");
     const statusBadge = st || isStopping
       ? `<span class="badge ${escapeHtml(badgeClass)}">${escapeHtml(badgeText)}</span>`
       : "<span class=\"badge\">NONE</span>";
@@ -349,7 +349,7 @@
       <div class="toolbar">
         <select id="session-select">${sessionOptions}</select>
         <button class="btn secondary" id="btn-resume" ${state.isRunning ? "disabled" : ""}>Resume</button>
-        <button class="btn danger" id="btn-stop" ${(isStopping || !state.isRunning) ? "disabled" : ""}>${isStopping ? "Stopping..." : "Stop"}</button>
+        <button class="btn danger" id="btn-stop" ${(isStopping || !state.isRunning) ? "disabled" : ""}>${isStopping ? "Terminating..." : "Stop"}</button>
         <button class="btn danger" id="btn-delete" ${!state.selectedSessionId ? "disabled" : ""} title="Delete this session and all its data">Delete</button>
         <button class="btn secondary" id="btn-discover">Models</button>
         <button class="btn secondary" id="btn-open-notes">Notes</button>
@@ -366,11 +366,11 @@
           <div class="model-grid">${modelGrid}</div>
         </div>
         <div class="card notes-card">
-          <h3>Progress Notes (Rolling Summary)${isStopping ? '<span class="pending-indicator"> \u2014 stopping current agent\u2026</span>' : ""}</h3>
+          <h3>Progress Notes (Rolling Summary)${isStopping ? '<span class="pending-indicator"> \u2014 terminating agent now\u2026</span>' : ""}</h3>
           <div class="notes-content">${notesContent}</div>
         </div>
         <div class="card history-card">
-          <h3>Loop History (${(state.history || []).length + (runningEntry ? 1 : 0)})${isStopping ? '<span class="pending-indicator"> \u2014 stopping current agent\u2026</span>' : ""}</h3>
+          <h3>Loop History (${(state.history || []).length + (runningEntry ? 1 : 0)})${isStopping ? '<span class="pending-indicator"> \u2014 terminating agent now\u2026</span>' : ""}</h3>
           <ul class="history-list">${historyList || '<li class="notes-empty">(no history)</li>'}</ul>
         </div>
         <div class="card log-card">
@@ -404,7 +404,7 @@
       if (state.selectedSessionId) {
         stoppingSessionId = state.selectedSessionId;
         btnStop.disabled = true;
-        btnStop.textContent = "Stopping...";
+        btnStop.textContent = "Terminating...";
         vscode.postMessage({ command: "stopSession", sessionId: state.selectedSessionId });
       }
     };

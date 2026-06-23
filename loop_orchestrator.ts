@@ -230,7 +230,7 @@ function getDefaultConfig(): LoopConfig {
       cliBinary: "opencode",
       maxIterations: 20,
       phaseTimeoutMs: 10 * 60 * 1000,
-      idleTimeoutMs: 90 * 1000,
+      idleTimeoutMs: 10 * 60 * 1000,
       ptyCols: 200,
       ptyRows: 50,
       profileFallbackModels: {
@@ -519,7 +519,7 @@ let loopConfig: LoopConfig = getDefaultConfig();
 
 const DEFAULT_MAX_ITERATIONS = 20;
 const DEFAULT_PHASE_TIMEOUT_MS = 10 * 60 * 1000;
-const DEFAULT_IDLE_TIMEOUT_MS = 90 * 1000;
+const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
 const DEFAULT_SKILLS: Record<AgentRole, AgentSkills> = {
   planner: {
@@ -1416,7 +1416,7 @@ Options for 'run':
   --profile <name>           CLI profile: opencode | kilo (auto-detected from --binary)
   --max-iterations <n>       Max loop iterations (default: 20)
   --phase-timeout <ms>       Phase timeout in ms (default: 600000)
-  --idle-timeout <ms>        Idle timeout in ms (default: 90000)
+  --idle-timeout <ms>        Idle timeout in ms (default: 600000)
   --planner-model <m>        Model for planner agent
   --implementer-model <m>    Model for implementer agent
   --tester-model <m>         Model for tester agent
@@ -1486,7 +1486,7 @@ class LoopOrchestrator {
           await fse.remove(stopPath);
           this.state.status = LoopStatus.PAUSED;
           await this.appendProgressNote(
-            `[Loop ${this.state.loopCount}] STOP: User requested stop. Pausing after current phase.`
+            `[Loop ${this.state.loopCount}] STOP: User requested stop. Session paused by user request.`
           );
           await this.saveState();
           await this.saveRegistry();
@@ -1878,7 +1878,7 @@ class LoopOrchestrator {
         lastRunAt: new Date().toISOString(),
       };
       await this.appendProgressNote(
-        `[Loop ${this.state.loopCount}] STOP: User requested stop during ${role}.`
+        `[Loop ${this.state.loopCount}] STOP: User requested stop; ${role} agent terminated immediately.`
       );
       await this.saveState();
       await this.saveRegistry();
@@ -2315,7 +2315,7 @@ async function cmdResume(parsed: Record<string, string>, rootDir: string): Promi
   }
 
   const registryPath = path.join(rootDir, loopConfig.paths.registryFileName);
-  const registry = await atomicReadJson<SessionRegistry>(registryPath);
+  let registry = await atomicReadJson<SessionRegistry>(registryPath);
   if (!registry) {
     console.error(`Error: No registry found at ${registryPath}. Run 'agent-loop init' first.`);
     process.exit(1);
@@ -2341,6 +2341,9 @@ async function cmdResume(parsed: Record<string, string>, rootDir: string): Promi
   if (parsed["max-iterations"]) state.maxIterations = parseIntSafe(parsed["max-iterations"], state.maxIterations);
   if (parsed["phase-timeout"]) state.phaseTimeoutMs = parseIntSafe(parsed["phase-timeout"], state.phaseTimeoutMs);
   if (parsed["idle-timeout"]) state.idleTimeoutMs = parseIntSafe(parsed["idle-timeout"], state.idleTimeoutMs);
+  if (state.idleTimeoutMs <= 90 * 1000) {
+    state.idleTimeoutMs = 10 * 60 * 1000;
+  }
   if (parsed.binary && parsed.binary !== "true") state.cliBinary = parsed.binary;
   if (parsed.profile && parsed.profile !== "true") state.cliProfile = parsed.profile;
   if (!state.cliProfile) state.cliProfile = resolveCliProfile(null, state.cliBinary).name;
@@ -2383,6 +2386,14 @@ async function cmdResume(parsed: Record<string, string>, rootDir: string): Promi
   }
 
   await atomicWriteJson(statePath, state);
+
+  registry = await mergeAndWriteSessionMeta(registryPath, registry, {
+    sessionId,
+    goal: state.goal,
+    targetProjectPath: state.targetProjectPath,
+    status: state.status,
+    createdAt: state.createdAt,
+  });
 
   const orchestrator = new LoopOrchestrator(rootDir, registry, state, rooms as Record<AgentRole, AgentRoom>);
   await orchestrator.run();

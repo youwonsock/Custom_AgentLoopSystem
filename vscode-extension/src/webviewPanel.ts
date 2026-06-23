@@ -114,7 +114,7 @@ export class LoopWebviewPanel {
       case "stopSession":
         await this.writeStopRequest(msg.sessionId);
         this.client.stopSession(msg.sessionId);
-        vscode.window.showInformationMessage(`Agent Loop: Stopping session ${msg.sessionId}…`);
+        vscode.window.showInformationMessage(`Agent Loop: Terminating session ${msg.sessionId}…`);
         await this.refresh();
         break;
       case "discoverModels":

@@ -322,7 +322,7 @@ export function readExtensionConfig(): ExtensionConfig {
     orchestratorScript: normalizePathSetting(cfg.get<string>("orchestratorScript", "")),
     maxIterations: cfg.get<number>("maxIterations", 20),
     phaseTimeoutMs: cfg.get<number>("phaseTimeoutMs", 600000),
-    idleTimeoutMs: cfg.get<number>("idleTimeoutMs", 90000),
+    idleTimeoutMs: cfg.get<number>("idleTimeoutMs", 600000),
     pollIntervalMs: cfg.get<number>("pollIntervalMs", 500),
   };
 }

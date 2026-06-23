@@ -153,7 +153,9 @@ export class LoopClient {
     if (opts.variantMapping?.master) args.push("--master-variant", opts.variantMapping.master);
     if (opts.variantMapping?.interrupter) args.push("--interrupter-variant", opts.variantMapping.interrupter);
 
-    return this.spawnSession(args, root, sessionId);
+    this.spawnSession(args, root, sessionId);
+    void this.store.syncRegistrySessionStatus(sessionId, "RUNNING");
+    return sessionId;
   }
 
   async resumeSession(sessionId: string): Promise<string> {
@@ -170,7 +172,9 @@ export class LoopClient {
       "--root", root,
     ];
 
-    return this.spawnSession(args, root, sessionId);
+    this.spawnSession(args, root, sessionId);
+    void this.store.syncRegistrySessionStatus(sessionId, "RUNNING");
+    return sessionId;
   }
 
   private spawnSession(args: string[], cwd: string, sessionId: string): string {
