@@ -105,18 +105,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
 
     vscode.commands.registerCommand("agentLoop.stopSession", async () => {
-      const active = client!.getActiveSessionIds();
-      if (active.length === 0) {
+      await store!.ensureInitialized();
+      const registry = await store!.readRegistry();
+      const runningMetaIds = registry.sessionMetas
+        .filter((m) => m.status === "RUNNING")
+        .map((m) => m.sessionId);
+      const candidateIds = [...new Set([...client!.getActiveSessionIds(), ...runningMetaIds])];
+      if (candidateIds.length === 0) {
         vscode.window.showInformationMessage("Agent Loop: No active sessions to stop.");
         return;
       }
       const picked = await vscode.window.showQuickPick(
-        active.map((sid) => ({ label: sid, sessionId: sid })),
+        candidateIds.map((sid) => ({ label: sid, sessionId: sid })),
         { placeHolder: "Select an active session to stop", ignoreFocusOut: true }
       );
       if (!picked) return;
-      client!.stopSession(picked.sessionId);
-      vscode.window.showInformationMessage(`Agent Loop: Stopped session ${picked.sessionId}`);
+      const panel = LoopWebviewPanel.getInstance(context, store!, client!, config);
+      await panel.requestStopSession(picked.sessionId);
+      vscode.window.showInformationMessage(`Agent Loop: Stopping session ${picked.sessionId}…`);
     }),
 
     vscode.commands.registerCommand("agentLoop.deleteSession", async (arg?: { sessionId?: string }) => {
@@ -149,7 +155,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       );
       if (confirm !== "Delete") return;
       if (client!.isRunning(sessionId)) {
-        try { client!.stopSession(sessionId); } catch { /* best effort */ }
+        try {
+          const panel = LoopWebviewPanel.getInstance(context, store!, client!, config);
+          await panel.requestStopSession(sessionId);
+        } catch { /* best effort */ }
       }
       const result = await store!.deleteSession(sessionId);
       if (result.error) {

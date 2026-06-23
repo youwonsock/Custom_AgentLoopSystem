@@ -315,7 +315,7 @@
       : `<div class="notes-empty">No session selected.</div>`;
 
     let runningEntry = "";
-    if (state.state && state.state.status === "RUNNING" && !isStopping) {
+    if (state.isRunning && !isStopping && state.state) {
       const currentPhase = state.state.phase;
       const mapped = phaseToRole[currentPhase];
       if (mapped) {
@@ -366,11 +366,11 @@
           <div class="model-grid">${modelGrid}</div>
         </div>
         <div class="card notes-card">
-          <h3>Progress Notes (Rolling Summary)${isStopping ? '<span class="pending-indicator"> \u2014 stopping after current work completes</span>' : ""}</h3>
+          <h3>Progress Notes (Rolling Summary)${isStopping ? '<span class="pending-indicator"> \u2014 stopping current agent\u2026</span>' : ""}</h3>
           <div class="notes-content">${notesContent}</div>
         </div>
         <div class="card history-card">
-          <h3>Loop History (${(state.history || []).length + (runningEntry ? 1 : 0)})${isStopping ? '<span class="pending-indicator"> \u2014 stopping after current work completes</span>' : ""}</h3>
+          <h3>Loop History (${(state.history || []).length + (runningEntry ? 1 : 0)})${isStopping ? '<span class="pending-indicator"> \u2014 stopping current agent\u2026</span>' : ""}</h3>
           <ul class="history-list">${historyList || '<li class="notes-empty">(no history)</li>'}</ul>
         </div>
         <div class="card log-card">

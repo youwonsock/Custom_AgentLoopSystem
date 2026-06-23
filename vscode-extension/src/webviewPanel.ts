@@ -112,13 +112,9 @@ export class LoopWebviewPanel {
         await this.handleResume(msg);
         break;
       case "stopSession":
-        {
-          const sessionDir = await this.store.getSessionDir(msg.sessionId);
-          const cfg = await this.store.getPathsConfig();
-          const stopPath = path.join(sessionDir, cfg.sessionFileNames.stopRequest);
-          await fs.promises.writeFile(stopPath, "stop", "utf8");
-          vscode.window.showInformationMessage(`Agent Loop: Stop requested for ${msg.sessionId}. Session will pause after current work completes.`);
-        }
+        await this.writeStopRequest(msg.sessionId);
+        this.client.stopSession(msg.sessionId);
+        vscode.window.showInformationMessage(`Agent Loop: Stopping session ${msg.sessionId}…`);
         await this.refresh();
         break;
       case "discoverModels":
@@ -252,18 +248,15 @@ export class LoopWebviewPanel {
     }
 
     try {
-      const procId = await this.client.startNewSession({
+      const sessionId = await this.client.startNewSession({
         goal: msg.goal,
         targetProjectPath: target,
         modelMapping: msg.modelMapping,
         variantMapping: msg.variantMapping,
       });
-      this.attachLogListener(procId);
-      // Don't set selectedSessionId here — let doRefresh() auto-select the newly created
-      // session (matched by status=RUNNING) so the UI shows the real session ID from
-      // sessions_registry.json rather than the process PID.
-      this.selectedSessionId = null;
-      vscode.window.showInformationMessage(`Agent Loop: Started session (pid ${procId})`);
+      this.selectedSessionId = sessionId;
+      this.attachLogListener(sessionId);
+      vscode.window.showInformationMessage(`Agent Loop: Started session ${sessionId}`);
       await this.refresh();
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -322,7 +315,7 @@ export class LoopWebviewPanel {
 
     if (this.client.isRunning(sessionId)) {
       try {
-        this.client.stopSession(sessionId);
+        await this.requestStopSession(sessionId);
       } catch {
         // best effort
       }
@@ -346,6 +339,23 @@ export class LoopWebviewPanel {
       vscode.window.showInformationMessage(`Agent Loop: Session "${sessionId}" was not found.`);
     }
     await this.refresh();
+  }
+
+  async requestStopSession(sessionId: string): Promise<void> {
+    await this.writeStopRequest(sessionId);
+    this.client.stopSession(sessionId);
+  }
+
+  registerSessionListeners(sessionId: string): void {
+    this.attachLogListener(sessionId);
+  }
+
+  private async writeStopRequest(sessionId: string): Promise<void> {
+    const sessionDir = await this.store.getSessionDir(sessionId);
+    const cfg = await this.store.getPathsConfig();
+    const stopPath = path.join(sessionDir, cfg.sessionFileNames.stopRequest);
+    await fs.promises.mkdir(sessionDir, { recursive: true });
+    await fs.promises.writeFile(stopPath, "stop", "utf8");
   }
 
   private attachLogListener(sessionId: string): void {
@@ -393,7 +403,11 @@ export class LoopWebviewPanel {
 
   private async doRefresh(): Promise<void> {
     if (!this.panel) return;
-    const registry = await this.store.readRegistry();
+    let registry = await this.store.readRegistry();
+
+    if (this.selectedSessionId && !registry.sessionMetas.some((m) => m.sessionId === this.selectedSessionId)) {
+      this.selectedSessionId = null;
+    }
 
     if (!this.selectedSessionId && registry.sessionMetas.length > 0) {
       const running = registry.sessionMetas.find((m) => m.status === "RUNNING");
@@ -406,6 +420,16 @@ export class LoopWebviewPanel {
     let finalSummary: FinalSummary | null = null;
 
     if (this.selectedSessionId) {
+      if (
+        this.client.isRunning(this.selectedSessionId) === false
+      ) {
+        const preState = await this.store.readState(this.selectedSessionId);
+        if (preState?.status === "RUNNING") {
+          await this.store.healOrphanedSession(this.selectedSessionId);
+          registry = await this.store.readRegistry();
+        }
+      }
+
       const bundle = await this.store.readBundle(this.selectedSessionId);
       state = bundle.state;
       progressNotes = bundle.progressNotes;
@@ -428,7 +452,7 @@ export class LoopWebviewPanel {
     }
 
     const isRunning = this.selectedSessionId
-      ? (this.client.isRunning(this.selectedSessionId) || state?.status === "RUNNING")
+      ? this.client.isRunning(this.selectedSessionId)
       : false;
 
     const defaultTargetPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tetris Battle</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="login-screen">
+    <h1>Tetris Battle</h1>
+    <p style="color: #888; font-size: 0.9rem;">Enter a room code or leave empty to create a room</p>
+    <input type="text" id="room-input" placeholder="Room Code (optional)" maxlength="4">
+    <button id="join-btn">Join Game</button>
+  </div>
+
+  <div id="game-container" class="hidden">
+    <div id="game-header">
+      <div id="room-code"></div>
+      <div id="game-status"></div>
+    </div>
+
+    <div id="boards">
+      <div class="board-wrapper">
+        <div class="board-label">You</div>
+        <canvas id="player-board"></canvas>
+      </div>
+
+      <div id="sidebar">
+        <div id="info-panel">
+          <div id="score">Score: 0</div>
+          <div id="lines">Lines: 0</div>
+        </div>
+        <div id="next-panel">
+          <div class="panel-label">Next</div>
+          <canvas id="next-piece"></canvas>
+        </div>
+        <div id="skill-bar-container">
+          <div class="panel-label">Skills</div>
+          <div id="skill-buttons"></div>
+        </div>
+      </div>
+
+      <div class="board-wrapper">
+        <div class="board-label">Opponent</div>
+        <canvas id="opponent-board"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div id="skill-notification"></div>
+
+  <script src="tetris.js"></script>
+  <script src="skills.js"></script>
+  <script src="game-client.js"></script>
+</body>
+</html>

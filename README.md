@@ -293,8 +293,8 @@ code --install-extension agent-loop-vscode-<ver>.vsix --force
 > 참고: 테스트 명령(`testCommand`)과 포트 세정(`portsToClean`) 설정은 AI 주도 테스트 전환에 따라 제거되었습니다.
 
 ### 현재 버전
-- **VS Code 확장**: `2.0.5`
-- **Core 엔진**: `1.0.0`
+- **VS Code 확장**: `3.0.8`
+- **Core 엔진**: `1.1.0`
 
 ---
 

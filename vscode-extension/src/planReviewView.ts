@@ -1,9 +1,10 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as vscode from "vscode";
-import { PlanChoice, PlanReviewStatePayload, PlanReviewSessionInfo, LoopState } from "./types";
+import { PlanChoice, PlanReviewStatePayload, PlanReviewSessionInfo, LoopState, readExtensionConfig } from "./types";
 import { StateStore } from "./stateStore";
 import { LoopClient } from "./loopClient";
+import { LoopWebviewPanel } from "./webviewPanel";
 
 export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
@@ -20,6 +21,15 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
   selectSession(sessionId: string | null): void {
     this.selectedSessionId = sessionId;
     this.refresh();
+  }
+
+  private registerMainPanelListeners(sessionId: string): void {
+    LoopWebviewPanel.getInstance(
+      this.context,
+      this.store,
+      this.client,
+      readExtensionConfig()
+    ).registerSessionListeners(sessionId);
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -209,6 +219,7 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
           await fs.promises.writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
           vscode.window.showInformationMessage(`Plan approved for ${sessionId}. Resuming session...`);
           await this.client.resumeSession(sessionId);
+          this.registerMainPanelListeners(sessionId);
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
           vscode.window.showErrorMessage(`Failed to approve plan: ${errMsg}`);
@@ -220,6 +231,7 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
         const sessionId = msg.sessionId;
         if (!sessionId) return;
         await this.client.resumeSession(sessionId);
+        this.registerMainPanelListeners(sessionId);
         vscode.window.showInformationMessage(`Resumed session ${sessionId}`);
         await this.pushState();
         break;
@@ -234,6 +246,7 @@ export class PlanReviewViewProvider implements vscode.WebviewViewProvider {
           await fs.promises.writeFile(interruptPath, msg.message, "utf8");
           vscode.window.showInformationMessage(`Message sent to ${sessionId}. Resuming...`);
           await this.client.resumeSession(sessionId);
+          this.registerMainPanelListeners(sessionId);
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
           vscode.window.showErrorMessage(`Failed to send interrupt message: ${errMsg}`);

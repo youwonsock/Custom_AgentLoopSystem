@@ -9,6 +9,8 @@ import {
   SessionRegistry,
   LoopHistoryEntry,
   FinalSummary,
+  SessionMeta,
+  AgentRole,
   readExtensionConfig,
   loadLoopPathsConfig,
   LoopPathsConfig,
@@ -248,6 +250,66 @@ export class StateStore {
       };
     }
     return { removedFromRegistry, dirRemoved };
+  }
+
+  async healOrphanedSession(sessionId: string): Promise<boolean> {
+    const state = await this.readState(sessionId);
+    if (!state || state.status !== "RUNNING") {
+      return false;
+    }
+
+    for (const role of Object.keys(state.agentStates) as AgentRole[]) {
+      if (state.agentStates[role].status === "running") {
+        state.agentStates[role] = {
+          status: "idle",
+          lastExitCode: -1,
+          lastRunAt: new Date().toISOString(),
+        };
+      }
+    }
+    state.status = "PAUSED";
+    state.updatedAt = new Date().toISOString();
+
+    const cfg = await this.getPathsConfig();
+    const statePath = path.join(await this.getSessionDir(sessionId), cfg.sessionFileNames.state);
+    await this.writeJsonAtomic(statePath, state);
+    this.stateCache.set(sessionId, state);
+
+    await this.mergeSessionMetaStatus(sessionId, {
+      status: "PAUSED",
+      goal: state.goal,
+      targetProjectPath: state.targetProjectPath,
+      createdAt: state.createdAt,
+    });
+    return true;
+  }
+
+  private async mergeSessionMetaStatus(
+    sessionId: string,
+    patch: Pick<SessionMeta, "status" | "goal" | "targetProjectPath" | "createdAt">
+  ): Promise<void> {
+    const registryPath = await this.getRegistryPath();
+    const fresh = await this.readRegistry();
+    const existing = fresh.sessionMetas.find((m) => m.sessionId === sessionId);
+    if (existing) {
+      existing.status = patch.status;
+      if (patch.goal !== undefined) existing.goal = patch.goal;
+      if (patch.targetProjectPath !== undefined) existing.targetProjectPath = patch.targetProjectPath;
+    } else {
+      fresh.sessionMetas.push({
+        sessionId,
+        goal: patch.goal,
+        targetProjectPath: patch.targetProjectPath,
+        status: patch.status,
+        createdAt: patch.createdAt,
+      });
+      if (!fresh.activeSessionIds.includes(sessionId)) {
+        fresh.activeSessionIds.push(sessionId);
+      }
+    }
+    await this.writeJsonAtomic(registryPath, fresh);
+    this.registryCache = fresh;
+    this.notifyListeners();
   }
 
   async readState(sessionId: string): Promise<LoopState | null> {

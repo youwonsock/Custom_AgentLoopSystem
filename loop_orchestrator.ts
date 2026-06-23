@@ -364,6 +364,7 @@ interface PtyRunResult {
   output: string;
   events: AnyObj[];
   timedOut: boolean;
+  cancelled: boolean;
   autoInjected: { prompt: string; response: string; timestamp: string }[];
 }
 
@@ -384,6 +385,14 @@ interface SpawnCliOptions {
   cliProfile: CliProfile;
   phaseLabel: string;
   variant?: string;
+  stopRequestPath?: string;
+}
+
+class StopRequestedError extends Error {
+  constructor() {
+    super("Stop requested");
+    this.name = "StopRequestedError";
+  }
 }
 
 const SENTINEL = "[PHASE_DONE]";
@@ -681,6 +690,76 @@ async function atomicReadJson<T>(filePath: string): Promise<T | null> {
   }
 }
 
+interface SessionMetaPatch {
+  sessionId: string;
+  goal?: string;
+  targetProjectPath?: string;
+  status?: LoopStatus;
+  createdAt?: string;
+}
+
+function upsertSessionMeta(registry: SessionRegistry, patch: SessionMetaPatch): void {
+  const existing = registry.sessionMetas.find((m) => m.sessionId === patch.sessionId);
+  if (existing) {
+    if (patch.status !== undefined) existing.status = patch.status;
+    if (patch.goal !== undefined) existing.goal = patch.goal;
+    if (patch.targetProjectPath !== undefined) existing.targetProjectPath = patch.targetProjectPath;
+  } else {
+    registry.sessionMetas.push({
+      sessionId: patch.sessionId,
+      goal: patch.goal ?? "",
+      targetProjectPath: patch.targetProjectPath ?? "",
+      status: patch.status ?? LoopStatus.RUNNING,
+      createdAt: patch.createdAt ?? new Date().toISOString(),
+    });
+  }
+  if (!registry.activeSessionIds.includes(patch.sessionId)) {
+    registry.activeSessionIds.push(patch.sessionId);
+  }
+}
+
+async function reloadRegistry(registryPath: string, fallback: SessionRegistry): Promise<SessionRegistry> {
+  const fresh = await atomicReadJson<SessionRegistry>(registryPath);
+  return fresh ?? fallback;
+}
+
+async function mergeAndWriteSessionMeta(
+  registryPath: string,
+  fallback: SessionRegistry,
+  patch: SessionMetaPatch
+): Promise<SessionRegistry> {
+  const merged = await reloadRegistry(registryPath, fallback);
+  upsertSessionMeta(merged, patch);
+  await atomicWriteJson(registryPath, merged);
+  return merged;
+}
+
+async function mergeAndWriteRegistryFields(
+  registryPath: string,
+  fallback: SessionRegistry,
+  fields: Partial<Pick<SessionRegistry, "availableModels" | "modelsDiscoveredAt" | "modelsDiscoveredCli" | "modelVariants">>
+): Promise<SessionRegistry> {
+  const merged = await reloadRegistry(registryPath, fallback);
+  if (fields.availableModels !== undefined) merged.availableModels = fields.availableModels;
+  if (fields.modelsDiscoveredAt !== undefined) merged.modelsDiscoveredAt = fields.modelsDiscoveredAt;
+  if (fields.modelsDiscoveredCli !== undefined) merged.modelsDiscoveredCli = fields.modelsDiscoveredCli;
+  if (fields.modelVariants !== undefined) merged.modelVariants = fields.modelVariants;
+  await atomicWriteJson(registryPath, merged);
+  return merged;
+}
+
+function resetStaleRunningAgentStates(agentStates: Record<AgentRole, AgentState>): void {
+  for (const role of Object.keys(agentStates) as AgentRole[]) {
+    if (agentStates[role].status === "running") {
+      agentStates[role] = {
+        status: "idle",
+        lastExitCode: -1,
+        lastRunAt: new Date().toISOString(),
+      };
+    }
+  }
+}
+
 async function atomicAppendLine(filePath: string, line: string): Promise<void> {
   await fse.ensureDir(path.dirname(filePath));
   const tmpPath = `${filePath}.append.${process.pid}.${Date.now()}`;
@@ -795,16 +874,40 @@ function spawnCliPty(opts: SpawnCliOptions): SpawnHandle {
       resolved = true;
       if (idleTimer) clearTimeout(idleTimer);
       if (phaseTimer) clearTimeout(phaseTimer);
+      if (stopTimer) clearInterval(stopTimer);
       try { ptyProc.kill(); } catch { /* already exited */ }
       resolve({ pid, ...result });
     };
 
     const triggerTimeout = (reason: string) => {
       killProcessTree(pid).then(() => {
-        finish({ exitCode: -1, output, events, timedOut: true, autoInjected });
+        finish({ exitCode: -1, output, events, timedOut: true, cancelled: false, autoInjected });
         console.error(`[spawnCliPty] ${reason} for session=${opts.sessionId} role=${opts.agentRole}`);
       });
     };
+
+    let stopTimer: NodeJS.Timeout | null = null;
+    const checkStopRequest = async () => {
+      if (resolved || !opts.stopRequestPath) return;
+      try {
+        const s = await fse.readFile(opts.stopRequestPath, "utf8");
+        if (s.trim().length > 0) {
+          await fse.remove(opts.stopRequestPath).catch(() => {});
+          killProcessTree(pid).then(() => {
+            finish({ exitCode: -1, output, events, timedOut: false, cancelled: true, autoInjected });
+            console.log(`[spawnCliPty] Stop requested for session=${opts.sessionId} role=${opts.agentRole}`);
+          });
+        }
+      } catch {
+        // stop file does not exist
+      }
+    };
+
+    if (opts.stopRequestPath) {
+      stopTimer = setInterval(() => {
+        checkStopRequest().catch(() => {});
+      }, 500);
+    }
 
     const resetIdle = () => {
       if (idleTimer) clearTimeout(idleTimer);
@@ -870,7 +973,7 @@ function spawnCliPty(opts: SpawnCliOptions): SpawnHandle {
     });
 
     ptyProc.onExit((e) => {
-      finish({ exitCode: e.exitCode, output, events, timedOut: false, autoInjected });
+      finish({ exitCode: e.exitCode, output, events, timedOut: false, cancelled: false, autoInjected });
     });
   });
 
@@ -1320,6 +1423,7 @@ Options for 'run':
   --qa-model <m>             Model for qa_lead agent
   --master-model <m>         Model for master agent
   --interrupter-model <m>    Model for interrupter agent
+  --session <id>             Pre-assigned session ID (optional; auto-generated if omitted)
   --root <path>              Orchestrator root dir (default: this file's dir)
 
 Options for 'resume':
@@ -1430,6 +1534,12 @@ class LoopOrchestrator {
         await this.saveState();
         await this.saveRegistry();
       } catch (err: unknown) {
+        if (err instanceof StopRequestedError) {
+          return;
+        }
+        if (this.disposed || this.state.status !== LoopStatus.RUNNING) {
+          return;
+        }
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`[orchestrator] Error in phase ${this.state.phase}: ${errMsg}`);
 
@@ -1718,6 +1828,14 @@ class LoopOrchestrator {
     this.state.status = LoopStatus.PAUSED;
   }
 
+  private getStopRequestPath(): string {
+    return path.join(this.sessionDir, loopConfig.paths.sessionFileNames.stopRequest);
+  }
+
+  private resetRunningAgentStates(): void {
+    resetStaleRunningAgentStates(this.state.agentStates);
+  }
+
   private async executeAgent(role: AgentRole, prompt: string): Promise<PtyRunResult> {
     const model = this.state.modelMapping[role];
     const variant = this.state.variantMapping?.[role] || undefined;
@@ -1743,6 +1861,7 @@ class LoopOrchestrator {
       cliProfile: resolveCliProfile(this.state.cliProfile, this.state.cliBinary),
       phaseLabel: this.state.phase,
       variant,
+      stopRequestPath: this.getStopRequestPath(),
     });
 
     this.activePtyPid = handle.pid;
@@ -1750,6 +1869,22 @@ class LoopOrchestrator {
     const result = await handle.done;
 
     this.activePtyPid = null;
+
+    if (result.cancelled) {
+      this.state.status = LoopStatus.PAUSED;
+      this.state.agentStates[role] = {
+        status: "failed",
+        lastExitCode: -1,
+        lastRunAt: new Date().toISOString(),
+      };
+      await this.appendProgressNote(
+        `[Loop ${this.state.loopCount}] STOP: User requested stop during ${role}.`
+      );
+      await this.saveState();
+      await this.saveRegistry();
+      throw new StopRequestedError();
+    }
+
     this.state.agentStates[role] = {
       status: result.exitCode === 0 ? "completed" : "failed",
       lastExitCode: result.exitCode,
@@ -1851,24 +1986,13 @@ class LoopOrchestrator {
   }
 
   private async saveRegistry(): Promise<void> {
-    const existing = this.registry.sessionMetas.find((m) => m.sessionId === this.state.sessionId);
-    if (existing) {
-      existing.status = this.state.status;
-      existing.goal = this.state.goal;
-      existing.targetProjectPath = this.state.targetProjectPath;
-    } else {
-      this.registry.sessionMetas.push({
-        sessionId: this.state.sessionId,
-        goal: this.state.goal,
-        targetProjectPath: this.state.targetProjectPath,
-        status: this.state.status,
-        createdAt: this.state.createdAt,
-      });
-      if (!this.registry.activeSessionIds.includes(this.state.sessionId)) {
-        this.registry.activeSessionIds.push(this.state.sessionId);
-      }
-    }
-    await atomicWriteJson(this.registryPath, this.registry);
+    this.registry = await mergeAndWriteSessionMeta(this.registryPath, this.registry, {
+      sessionId: this.state.sessionId,
+      goal: this.state.goal,
+      targetProjectPath: this.state.targetProjectPath,
+      status: this.state.status,
+      createdAt: this.state.createdAt,
+    });
   }
 
   private registerSignalHandlers(): void {
@@ -1876,7 +2000,9 @@ class LoopOrchestrator {
     this.signalHandlersRegistered = true;
 
     const handler = () => {
-      this.dispose().catch((err) => {
+      this.dispose().then(() => {
+        process.exit(0);
+      }).catch((err) => {
         console.error(`[orchestrator] Error during disposal: ${err.message}`);
         process.exit(1);
       });
@@ -1902,6 +2028,7 @@ class LoopOrchestrator {
         `[Loop ${this.state.loopCount}] STOPPED: Operator stopped the session via command.`
       );
     }
+    this.resetRunningAgentStates();
     await this.saveState();
     await this.saveRegistry();
     console.log(`[orchestrator] Session ${this.state.sessionId} disposed. Status: ${this.state.status}.`);
@@ -2040,12 +2167,13 @@ async function cmdModels(parsed: Record<string, string>, rootDir: string): Promi
   const models = await discoverCliModels(cliBinary, override, profile);
 
   if (registry) {
-    registry.availableModels = models;
-    registry.modelsDiscoveredAt = new Date().toISOString();
-    registry.modelsDiscoveredCli = `${cliBinary} (${profile.name})`;
     const modelVariantsConfig = await loadModelVariantsConfig(rootDir);
-    registry.modelVariants = modelVariantsConfig ?? null;
-    await atomicWriteJson(registryPath, registry);
+    await mergeAndWriteRegistryFields(registryPath, registry, {
+      availableModels: models,
+      modelsDiscoveredAt: new Date().toISOString(),
+      modelsDiscoveredCli: `${cliBinary} (${profile.name})`,
+      modelVariants: modelVariantsConfig ?? null,
+    });
   }
 
   if (models.length === 0) {
@@ -2084,7 +2212,7 @@ async function cmdRun(parsed: Record<string, string>, rootDir: string): Promise<
     console.error("Error: Failed to initialize or read session registry.");
     process.exit(1);
   }
-  const reg: SessionRegistry = registry;
+  let reg: SessionRegistry = registry;
 
   console.log(`[orchestrator] CLI profile: ${profile.name} | binary: ${cliBinary}`);
   if (profile.defaultBinary !== cliBinary) {
@@ -2098,10 +2226,11 @@ async function cmdRun(parsed: Record<string, string>, rootDir: string): Promise<
   }
   console.log(`[orchestrator] Discovering available models from '${cliBinary}'...`);
   const models = await discoverCliModels(cliBinary, reg.manualModelsOverride, profile);
-  reg.availableModels = models;
-  reg.modelsDiscoveredAt = new Date().toISOString();
-  reg.modelsDiscoveredCli = `${cliBinary} (${profile.name})`;
-  await atomicWriteJson(registryPath, reg);
+  reg = await mergeAndWriteRegistryFields(registryPath, reg, {
+    availableModels: models,
+    modelsDiscoveredAt: new Date().toISOString(),
+    modelsDiscoveredCli: `${cliBinary} (${profile.name})`,
+  });
 
   if (models.length === 0) {
     console.warn(`[orchestrator] No models discovered. Using fallback model names. Specify models explicitly with --planner-model etc.`);
@@ -2123,13 +2252,21 @@ async function cmdRun(parsed: Record<string, string>, rootDir: string): Promise<
 
   const modelVariantsConfig = await loadModelVariantsConfig(rootDir);
   if (modelVariantsConfig) {
-    reg.modelVariants = modelVariantsConfig;
+    reg = await mergeAndWriteRegistryFields(registryPath, reg, {
+      modelVariants: modelVariantsConfig,
+    });
   }
 
-  const sessionId = generateSessionId();
+  const sessionId = parsed.session && parsed.session !== "true" ? parsed.session : generateSessionId();
+  const sessionDir = path.join(rootDir, loopConfig.paths.sessionsRoot, sessionId);
+  const statePath = path.join(sessionDir, loopConfig.paths.sessionFileNames.state);
+  if (await fse.pathExists(statePath)) {
+    console.error(`Error: Session ${sessionId} already exists.`);
+    process.exit(1);
+  }
   console.log(`[orchestrator] New session: ${sessionId}`);
 
-  const { sessionDir, rooms } = await initGoalTree(rootDir, sessionId);
+  const { sessionDir: _, rooms } = await initGoalTree(rootDir, sessionId);
 
   const state = createDefaultLoopState(
     sessionId,
@@ -2144,17 +2281,15 @@ async function cmdRun(parsed: Record<string, string>, rootDir: string): Promise<
     idleTimeoutMs
   );
 
-  const statePath = path.join(sessionDir, loopConfig.paths.sessionFileNames.state);
   await atomicWriteJson(statePath, state);
 
-  reg.sessionMetas.push({
+  reg = await mergeAndWriteSessionMeta(registryPath, reg, {
     sessionId,
     goal,
     targetProjectPath: path.resolve(targetProjectPath),
     status: LoopStatus.RUNNING,
     createdAt: state.createdAt,
   });
-  await atomicWriteJson(registryPath, reg);
 
   const orchestrator = new LoopOrchestrator(rootDir, reg, state, rooms);
   await orchestrator.run();
@@ -2210,6 +2345,8 @@ async function cmdResume(parsed: Record<string, string>, rootDir: string): Promi
   if (parsed.profile && parsed.profile !== "true") state.cliProfile = parsed.profile;
   if (!state.cliProfile) state.cliProfile = resolveCliProfile(null, state.cliBinary).name;
   state.variantMapping = state.variantMapping ?? resolveVariantMapping(parsed);
+
+  resetStaleRunningAgentStates(state.agentStates);
 
   if (state.status === LoopStatus.PAUSED) {
     state.status = LoopStatus.RUNNING;

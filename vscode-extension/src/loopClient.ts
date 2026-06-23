@@ -1,4 +1,5 @@
 import { ChildProcess, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
@@ -16,6 +17,10 @@ export interface LogEntry {
   timestamp: string;
   stream: "stdout" | "stderr";
   text: string;
+}
+
+function generateSessionId(): string {
+  return `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
 }
 
 export class LoopClient {
@@ -115,6 +120,7 @@ export class LoopClient {
   }
 
   async startNewSession(opts: NewSessionOptions): Promise<string> {
+    const sessionId = generateSessionId();
     const root = await this.store.getRootDir();
     const script = await this.resolveOrchestratorScript();
     const cfg = this.liveConfig();
@@ -127,6 +133,7 @@ export class LoopClient {
       "--binary", cfg.cliBinary,
       "--profile", cfg.cliProfile,
       "--root", root,
+      "--session", sessionId,
       "--max-iterations", String(cfg.maxIterations),
       "--phase-timeout", String(cfg.phaseTimeoutMs),
       "--idle-timeout", String(cfg.idleTimeoutMs),
@@ -146,10 +153,13 @@ export class LoopClient {
     if (opts.variantMapping?.master) args.push("--master-variant", opts.variantMapping.master);
     if (opts.variantMapping?.interrupter) args.push("--interrupter-variant", opts.variantMapping.interrupter);
 
-    return this.spawnSession(args, root);
+    return this.spawnSession(args, root, sessionId);
   }
 
   async resumeSession(sessionId: string): Promise<string> {
+    if (this.isRunning(sessionId)) {
+      throw new Error(`Session ${sessionId} is already running.`);
+    }
     const root = await this.store.getRootDir();
     const script = await this.resolveOrchestratorScript();
 
@@ -160,20 +170,14 @@ export class LoopClient {
       "--root", root,
     ];
 
-    return this.spawnSession(args, root);
+    return this.spawnSession(args, root, sessionId);
   }
 
-  private spawnSession(args: string[], cwd: string): string {
+  private spawnSession(args: string[], cwd: string, sessionId: string): string {
     const child = spawn(this.config.nodeBinary, args, {
       cwd,
       env: process.env,
     });
-
-    let sessionId = `proc-${child.pid}`;
-    const sessionIdx = args.indexOf("--session");
-    if (sessionIdx >= 0 && sessionIdx + 1 < args.length) {
-      sessionId = args[sessionIdx + 1];
-    }
 
     this.activeProcesses.set(sessionId, child);
 
@@ -210,18 +214,20 @@ export class LoopClient {
 
   stopSession(sessionId: string): void {
     const child = this.activeProcesses.get(sessionId);
-    if (child) {
-      let exited = false;
-      child.on("exit", () => { exited = true; });
-      try { child.kill("SIGTERM"); } catch { /* already dead */ }
-      const killTimer = setTimeout(() => {
-        if (!exited && child.exitCode === null && child.signalCode === null) {
-          try { child.kill("SIGKILL"); } catch { /* already dead */ }
-        }
-      }, 5000);
-      child.on("exit", () => clearTimeout(killTimer));
-    }
-    this.activeProcesses.delete(sessionId);
+    if (!child) return;
+    let exited = false;
+    const onExit = () => {
+      exited = true;
+      this.activeProcesses.delete(sessionId);
+    };
+    child.on("exit", onExit);
+    try { child.kill("SIGTERM"); } catch { /* already dead */ }
+    const killTimer = setTimeout(() => {
+      if (!exited && child.exitCode === null && child.signalCode === null) {
+        try { child.kill("SIGKILL"); } catch { /* already dead */ }
+      }
+    }, 5000);
+    child.on("exit", () => clearTimeout(killTimer));
   }
 
   stopAll(): void {
